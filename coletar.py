@@ -11,7 +11,7 @@ def ler_tse():
     d = json.loads(base64.urlsafe_b64decode(p + '=' * (-len(p) % 4)).decode('latin1'))
     votos = {c['n']: int(c['vap'])
              for a in d['carg'][0]['agr'] for par in a['par'] for c in par['cand']}
-    return {'t': f"{d['dg']} {d['hg']}", 'pst': float(d['s']['pst'].replace(',', '.')), 'v': votos}
+    return {'t': f"{d['dg']} {d['hg']}", 'pst': float(d['s']['pst'].replace(',', '.')), 'st': int(d['s']['st']), 'v': votos}
 
 try:
     hist = json.load(open(ARQ, encoding='utf8'))

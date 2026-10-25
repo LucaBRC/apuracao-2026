@@ -40,6 +40,13 @@
   #graf svg { width:100%; height:auto; touch-action:pan-y; }
   #graf .eixo { font-size:11px; fill:#8b93a5; }
   #graf .grade { stroke:#2a2f3a; stroke-width:1; }
+  /* claude---(anomalias) */
+  .alerta { padding:8px 10px; border-radius:8px; background:#11141a; margin:6px 0; border-left:4px solid #888; font-size:13px; }
+  .alerta.forte { border-color:#f87171; }
+  .alerta.medio { border-color:#facc15; }
+  .alerta.info { border-color:#60a5fa; }
+  #regras { font-size:12px; color:var(--mut); margin-top:8px; }
+  #regras summary { cursor:pointer; }
   #grafInfo { font-size:13px; min-height:20px; margin-top:4px; }
   #sel { margin-top:10px; padding:10px; border-radius:8px; background:#11141a; font-size:14px; }
   #sel:empty { display:none; }
@@ -94,6 +101,21 @@
       <div class="mut">Votos × horário da totalização (Brasil)</div>
       <svg id="grafSvg" viewBox="0 0 600 260"></svg>
       <div id="grafInfo" class="mut">toque ou passe o mouse no gráfico</div>
+    </div>
+    <div class="card">
+      <div class="mut">Detector de comportamento anormal</div>
+      <div id="anom"></div>
+      <details id="regras"><summary>Como funciona (regras fixas, iguais para todos os candidatos)</summary>
+        <p>Compara cada ponto do histórico com o anterior. As mesmas regras e limites valem para todos os candidatos, nos dois sentidos (alta ou baixa), e foram fixadas antes de ver os dados.</p>
+        <ol>
+          <li><b>Votos acumulados diminuíram</b>: soma de votos nunca deveria cair. Indica correção ou erro de dado.</li>
+          <li><b>% apurado diminuiu</b>: idem.</li>
+          <li><b>Votos sem seções novas</b>: entraram votos mas o número de seções totalizadas não mudou.</li>
+          <li><b>Votos por seção fora do padrão</b>: votos novos ÷ seções novas, comparado à mediana do próprio histórico (z robusto, mediana/MAD, |z| &gt; 4, mín. 8 intervalos).</li>
+          <li><b>Mudança brusca na fatia dos votos novos</b>: % de cada candidato só entre os votos que entraram no intervalo, mesmo teste de z robusto. Isso é comum e esperado: estados e regiões totalizam em horários diferentes.</li>
+        </ol>
+        <p>Um alerta é só uma marca estatística para olhar com mais atenção. Não é prova de erro nem de fraude.</p>
+      </details>
     </div>
     <div class="card">
       <div class="mut" style="margin-bottom:4px">Apurado por região</div>
@@ -166,6 +188,7 @@ async function atualizar() {
   if (br) registrarPonto(br);
   desenhar();
   desenharGrafico();
+  desenharAnomalias();
 }
 
 function corApu(p) {
@@ -298,7 +321,7 @@ async function carregarHistorico() {
 }
 function registrarPonto(br) {
   const v = {}; br.cands.forEach(c => v[c.n] = c.votos);
-  juntar([{t: br.hora, pst: br.pst, v}]);
+  juntar([{t: br.hora, pst: br.pst, st: br.st, v}]);
 }
 const fmtVotos = n => n >= 1e6 ? (n / 1e6).toLocaleString('pt-BR', {maximumFractionDigits:1}) + ' mi' : Math.round(n / 1e3) + ' mil';
 const hhmm = ms => new Date(ms).toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit', timeZone:'America/Sao_Paulo'});
@@ -350,9 +373,58 @@ function desenharGrafico() {
   hit.addEventListener('touchmove', mostrar, {passive:true});
 }
 
+// claude---(anomalias): regras fixas e simétricas sobre o histórico (ver <details id="regras">)
+const Z_LIM = 4, MIN_INT = 8;
+function mediana(a) { const b = [...a].sort((x, y) => x - y), m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; }
+function zRobusto(vals) {
+  const med = mediana(vals), mad = mediana(vals.map(v => Math.abs(v - med))) * 1.4826;
+  return vals.map(v => mad > 0 ? (v - med) / mad : 0);
+}
+function detectar() {
+  const cands = (dados.BR && dados.BR.cands) || [];
+  const nome = n => (cands.find(c => c.n === n) || {}).nome || n;
+  const al = [];
+  const ints = [];
+  for (let i = 1; i < hist.length; i++) {
+    const a = hist[i - 1], b = hist[i], hora = b.t.split(' ')[1];
+    const ns = Object.keys(b.v);
+    let dTot = 0; const dv = {};
+    for (const n of ns) { dv[n] = (b.v[n] || 0) - (a.v[n] || 0); dTot += dv[n]; }
+    for (const n of ns) if (dv[n] < 0)
+      al.push({t: b.t, nivel: 'forte', msg: `${hora} · votos de ${nome(n)} caíram ${(-dv[n]).toLocaleString('pt-BR')}`});
+    if (b.pst < a.pst - 0.005) al.push({t: b.t, nivel: 'forte', msg: `${hora} · % apurado caiu de ${fmt(a.pst)} para ${fmt(b.pst)}`});
+    const temSt = a.st != null && b.st != null, dSt = temSt ? b.st - a.st : null;
+    if (temSt && dSt === 0 && dTot > 0)
+      al.push({t: b.t, nivel: 'medio', msg: `${hora} · +${dTot.toLocaleString('pt-BR')} votos sem nenhuma seção nova`});
+    if (dTot > 0) ints.push({t: b.t, hora, dTot, dSt, fatia: Object.fromEntries(ns.map(n => [n, dv[n] / dTot * 100]))});
+  }
+  const comSt = ints.filter(x => x.dSt > 0);
+  if (comSt.length >= MIN_INT) {
+    const z = zRobusto(comSt.map(x => x.dTot / x.dSt)), med = mediana(comSt.map(x => x.dTot / x.dSt));
+    comSt.forEach((x, i) => { if (Math.abs(z[i]) > Z_LIM)
+      al.push({t: x.t, nivel: 'medio', msg: `${x.hora} · ${Math.round(x.dTot / x.dSt)} votos por seção nova (mediana ${Math.round(med)}, z=${z[i].toFixed(1)})`}); });
+  }
+  if (ints.length >= MIN_INT) for (const n of cands.map(c => c.n)) {
+    const vals = ints.map(x => x.fatia[n] || 0), z = zRobusto(vals), med = mediana(vals);
+    ints.forEach((x, i) => { if (Math.abs(z[i]) > Z_LIM)
+      al.push({t: x.t, nivel: 'info', msg: `${x.hora} · ${nome(n)} levou ${vals[i].toFixed(1)}% dos votos novos (mediana ${med.toFixed(1)}%, z=${z[i].toFixed(1)})`}); });
+  }
+  return {al: al.sort((a, b) => paraMs(b.t) - paraMs(a.t)), nInt: ints.length};
+}
+function desenharAnomalias() {
+  const el = document.getElementById('anom');
+  const {al, nInt} = detectar();
+  const base = `<div class="mut" style="margin:4px 0">${hist.length} pontos · ${nInt} intervalos analisados` +
+    (nInt < MIN_INT ? ` · testes estatísticos (4 e 5) ligam com ${MIN_INT} intervalos` : '') + '</div>';
+  el.innerHTML = base + (al.length
+    ? al.slice(0, 30).map(a => `<div class="alerta ${a.nivel}">${a.msg}</div>`).join('')
+    : '<div class="alerta" style="border-color:#22c55e">Nenhum comportamento fora das regras até agora.</div>');
+}
+
 montarMapa();
-carregarHistorico().then(desenharGrafico);
-setInterval(() => carregarHistorico().then(desenharGrafico), 120000);
+const redesenharHist = () => { desenharGrafico(); desenharAnomalias(); };
+carregarHistorico().then(redesenharHist);
+setInterval(() => carregarHistorico().then(redesenharHist), 120000);
 let falta = 0;
 setInterval(() => {
   if (--falta <= 0) { falta = INTERVALO; atualizar(); }
