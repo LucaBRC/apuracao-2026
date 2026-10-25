@@ -97,6 +97,10 @@
 </div>
 <div id="tip"></div>
 
+<script>
+// claude---(mobile): mostra na tela qualquer erro de script (celular não tem console)
+window.onerror = (m, src, l) => { const h = document.getElementById('hora'); if (h) h.innerHTML = '<span class="err">erro: ' + m + ' (linha ' + l + ')</span>'; };
+</script>
 <script src="mapa.js"></script>
 <script>
 const BASE = 'https://resultados.tse.jus.br/oficial/ele2026/6258/dados/';
@@ -113,7 +117,7 @@ const COR_CAND = {'13':'#ef4444','22':'#3b82f6'};
 const INTERVALO = 30;
 let dados = {}, modo = 'apu', ordem = {k:'uf', d:1}, ordemCand = [];
 
-const num = s => parseFloat(String(s ?? '0').replace(',', '.')) || 0;
+const num = s => parseFloat(String(s == null ? '0' : s).replace(',', '.')) || 0;
 const fmt = n => n.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2}) + '%';
 
 function decodeJws(txt) {
@@ -127,20 +131,22 @@ function decodeJws(txt) {
 function resumir(d) {
   const cands = [];
   for (const a of d.carg[0].agr) for (const p of a.par) for (const c of p.cand)
-    cands.push({n:c.n, nome:c.nmu, pct:num(c.pvapn ?? c.pvap), votos:+c.vap});
+    cands.push({n:c.n, nome:c.nmu, pct:num(c.pvapn != null ? c.pvapn : c.pvap), votos:+c.vap});
   cands.sort((a,b) => a.n.localeCompare(b.n));
-  return { ts:+d.s.ts, st:+d.s.st, pst:num(d.s.pstn ?? d.s.pst), cands, hora:`${d.dg} ${d.hg}` };
+  return { ts:+d.s.ts, st:+d.s.st, pst:num(d.s.pstn != null ? d.s.pstn : d.s.pst), cands, hora:`${d.dg} ${d.hg}` };
 }
 
 async function baixar(uf) {
-  const r = await fetch(`${BASE}${uf}/${uf}-c0001-e006258-u.jws?nocache=${Date.now()}`, {cache:'no-store'});
+  // claude---(mobile): teto de 15 s por arquivo, para rede lenta não travar a atualização
+  const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 15000);
+  const r = await fetch(`${BASE}${uf}/${uf}-c0001-e006258-u.jws?nocache=${Date.now()}`, {cache:'no-store', signal:ctl.signal}).finally(() => clearTimeout(tm));
   if (!r.ok) throw new Error(uf + ' HTTP ' + r.status);
   return resumir(decodeJws(await r.text()));
 }
 
 async function atualizar() {
   const alvos = ['br', ...UFS.map(u => u.toLowerCase())];
-  const res = await Promise.allSettled(alvos.map(baixar));
+  const res = await Promise.all(alvos.map(u => baixar(u).then(value => ({status:'fulfilled', value}), () => ({status:'rejected'}))));
   let falhas = 0;
   res.forEach((r, i) => { if (r.status === 'fulfilled') dados[alvos[i].toUpperCase()] = r.value; else falhas++; });
   const br = dados.BR;
@@ -178,7 +184,7 @@ function montarMapa() {
   }
   const tip = document.getElementById('tip');
   svg.addEventListener('mousemove', e => {
-    const uf = e.target.dataset?.uf;
+    const uf = e.target.dataset && e.target.dataset.uf;
     if (!uf) { tip.style.display = 'none'; return; }
     tip.innerHTML = infoUf(uf);
     tip.style.display = 'block';
@@ -188,7 +194,7 @@ function montarMapa() {
   svg.addEventListener('mouseleave', () => tip.style.display = 'none');
   // claude---(mobile): toque num estado mostra o detalhe abaixo do mapa
   svg.addEventListener('click', e => {
-    selecionado = e.target.dataset?.uf || null;
+    selecionado = (e.target.dataset && e.target.dataset.uf) || null;
     document.querySelectorAll('path.uf').forEach(p => p.style.stroke = p.dataset.uf === selecionado ? '#fff' : '');
     mostrarSel();
   });
@@ -214,7 +220,8 @@ function desenhar() {
     document.getElementById('t_' + uf).textContent = d ? `${uf} ${Math.floor(d.pst)}%` : uf;
   }
   mostrarSel();
-  const cands = dados.BR?.cands || [];
+  const cands = (dados.BR && dados.BR.cands) || [];
+  const c0 = cands[0] || {}, c1 = cands[1] || {};
   ordemCand = cands;
   document.getElementById('leg').innerHTML = modo === 'apu'
     ? `0% <i style="background:linear-gradient(90deg,${corApu(0.01)},${corApu(100)})"></i> 100% · <span style="color:#9aa">cinza = nada apurado</span>`
@@ -241,14 +248,14 @@ function desenhar() {
   document.getElementById('regs').innerHTML = hr;
 
   const ths = document.querySelectorAll('th');
-  ths[2].textContent = cands[0]?.nome || '';
-  ths[3].textContent = cands[1]?.nome || '';
+  ths[2].textContent = c0.nome || '';
+  ths[3].textContent = c1.nome || '';
   const linhas = UFS.map(uf => {
     const d = dados[uf] || {pst:0, cands:[]};
-    return {uf, pst:d.pst, c0:d.cands[0]?.pct ?? 0, c1:d.cands[1]?.pct ?? 0};
+    return {uf, pst:d.pst, c0:d.cands[0] ? d.cands[0].pct : 0, c1:d.cands[1] ? d.cands[1].pct : 0};
   }).sort((a,b) => (a[ordem.k] > b[ordem.k] ? 1 : a[ordem.k] < b[ordem.k] ? -1 : 0) * ordem.d);
   document.getElementById('tab').innerHTML = linhas.map(l =>
-    `<tr><td>${l.uf}</td><td>${fmt(l.pst)}</td><td style="color:${COR_CAND[cands[0]?.n]}">${fmt(l.c0)}</td><td style="color:${COR_CAND[cands[1]?.n]}">${fmt(l.c1)}</td></tr>`).join('');
+    `<tr><td>${l.uf}</td><td>${fmt(l.pst)}</td><td style="color:${COR_CAND[c0.n]}">${fmt(l.c0)}</td><td style="color:${COR_CAND[c1.n]}">${fmt(l.c1)}</td></tr>`).join('');
 }
 
 document.querySelectorAll('th').forEach(th => th.onclick = () => {
