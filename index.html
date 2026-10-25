@@ -36,6 +36,11 @@
   .leg { display:flex; align-items:center; gap:6px; margin-top:8px; }
   .leg i { display:inline-block; width:120px; height:10px; border-radius:5px; }
   .err { color:#f87171; }
+  /* claude---(grafico) */
+  #graf svg { width:100%; height:auto; touch-action:pan-y; }
+  #graf .eixo { font-size:11px; fill:#8b93a5; }
+  #graf .grade { stroke:#2a2f3a; stroke-width:1; }
+  #grafInfo { font-size:13px; min-height:20px; margin-top:4px; }
   #sel { margin-top:10px; padding:10px; border-radius:8px; background:#11141a; font-size:14px; }
   #sel:empty { display:none; }
   /* claude---(mobile) */
@@ -84,6 +89,11 @@
       <div class="mut" id="brSec"></div>
       <div class="cands" id="brCands"></div>
       <div class="h2h" id="brH2h"></div>
+    </div>
+    <div class="card" id="graf">
+      <div class="mut">Votos × horário da totalização (Brasil)</div>
+      <svg id="grafSvg" viewBox="0 0 600 260"></svg>
+      <div id="grafInfo" class="mut">toque ou passe o mouse no gráfico</div>
     </div>
     <div class="card">
       <div class="mut" style="margin-bottom:4px">Apurado por região</div>
@@ -153,7 +163,9 @@ async function atualizar() {
   document.getElementById('hora').innerHTML = br
     ? `totalização TSE: ${br.hora} · consultado às ${new Date().toLocaleTimeString('pt-BR')}` + (falhas ? ` · <span class="err">${falhas} falha(s)</span>` : '')
     : '<span class="err">sem dados do TSE</span>';
+  if (br) registrarPonto(br);
   desenhar();
+  desenharGrafico();
 }
 
 function corApu(p) {
@@ -266,7 +278,81 @@ document.querySelectorAll('th').forEach(th => th.onclick = () => {
 document.getElementById('mApu').onclick = () => { modo='apu'; mApu.classList.add('on'); mLid.classList.remove('on'); desenhar(); };
 document.getElementById('mLid').onclick = () => { modo='lid'; mLid.classList.add('on'); mApu.classList.remove('on'); desenhar(); };
 
+
+// claude---(grafico): histórico = historico.json (GitHub Actions, a cada ~1 min) + pontos vistos neste aparelho
+let hist = [];
+const CHAVE = 'apuracao2026_hist';
+function paraMs(t) { const [d, h] = t.split(' '); const [dd, mm, aa] = d.split('/'); return new Date(`${aa}-${mm}-${dd}T${h}-03:00`).getTime(); }
+function juntar(pontos) {
+  const m = {};
+  for (const p of hist.concat(pontos)) if (p && p.t && p.v) m[p.t] = p;
+  hist = Object.values(m).sort((a, b) => paraMs(a.t) - paraMs(b.t));
+  try { localStorage.setItem(CHAVE, JSON.stringify(hist)); } catch (e) {}
+}
+try { juntar(JSON.parse(localStorage.getItem(CHAVE) || '[]')); } catch (e) {}
+async function carregarHistorico() {
+  try {
+    const r = await fetch('historico.json?nocache=' + Date.now(), {cache:'no-store'});
+    if (r.ok) juntar(await r.json());
+  } catch (e) {}
+}
+function registrarPonto(br) {
+  const v = {}; br.cands.forEach(c => v[c.n] = c.votos);
+  juntar([{t: br.hora, pst: br.pst, v}]);
+}
+const fmtVotos = n => n >= 1e6 ? (n / 1e6).toLocaleString('pt-BR', {maximumFractionDigits:1}) + ' mi' : Math.round(n / 1e3) + ' mil';
+const hhmm = ms => new Date(ms).toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit', timeZone:'America/Sao_Paulo'});
+function desenharGrafico() {
+  const svg = document.getElementById('grafSvg');
+  const W = 600, H = 260, L = 52, R = 14, T = 12, B = 26;
+  const cands = (dados.BR && dados.BR.cands) || [];
+  if (hist.length < 2 || !cands.length) {
+    svg.innerHTML = `<text x="${W/2}" y="${H/2}" text-anchor="middle" class="eixo">juntando pontos… (${hist.length})</text>`;
+    return;
+  }
+  const xs = hist.map(p => paraMs(p.t));
+  const x0 = xs[0], x1 = xs[xs.length - 1];
+  let ymax = 0; hist.forEach(p => cands.forEach(c => ymax = Math.max(ymax, p.v[c.n] || 0)));
+  ymax *= 1.05;
+  const X = ms => L + (ms - x0) / Math.max(1, x1 - x0) * (W - L - R);
+  const Y = v => T + (1 - v / ymax) * (H - T - B);
+  let g = '';
+  for (let i = 0; i <= 4; i++) {
+    const v = ymax * i / 4, y = Y(v);
+    g += `<line class="grade" x1="${L}" x2="${W - R}" y1="${y}" y2="${y}"/><text class="eixo" x="${L - 6}" y="${y + 4}" text-anchor="end">${fmtVotos(v)}</text>`;
+  }
+  for (let i = 0; i <= 4; i++) {
+    const ms = x0 + (x1 - x0) * i / 4;
+    g += `<text class="eixo" x="${X(ms)}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : i === 4 ? 'end' : 'middle'}">${hhmm(ms)}</text>`;
+  }
+  for (const c of cands) {
+    const pts = hist.filter(p => p.v[c.n] != null).map(p => `${X(paraMs(p.t)).toFixed(1)},${Y(p.v[c.n]).toFixed(1)}`).join(' ');
+    g += `<polyline fill="none" stroke="${COR_CAND[c.n] || '#aaa'}" stroke-width="2.5" stroke-linejoin="round" points="${pts}"/>`;
+  }
+  g += `<line id="grafCursor" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="#fff6" stroke-width="1" style="display:none"/>`;
+  g += `<rect id="grafHit" x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent"/>`;
+  svg.innerHTML = g;
+  const info = document.getElementById('grafInfo');
+  const mostrar = ev => {
+    const bb = svg.getBoundingClientRect();
+    const px = ((ev.touches ? ev.touches[0].clientX : ev.clientX) - bb.left) / bb.width * W;
+    const ms = x0 + (px - L) / (W - L - R) * (x1 - x0);
+    let best = hist[0];
+    for (const p of hist) if (Math.abs(paraMs(p.t) - ms) < Math.abs(paraMs(best.t) - ms)) best = p;
+    const cur = document.getElementById('grafCursor'), cx = X(paraMs(best.t));
+    cur.setAttribute('x1', cx); cur.setAttribute('x2', cx); cur.style.display = '';
+    info.innerHTML = `<b>${best.t.split(' ')[1]}</b> · ${fmt(best.pst)} apurado · ` +
+      cands.map(c => `<span style="color:${COR_CAND[c.n]}">${c.nome}: ${(best.v[c.n] || 0).toLocaleString('pt-BR')}</span>`).join(' · ');
+  };
+  const hit = document.getElementById('grafHit');
+  hit.addEventListener('mousemove', mostrar);
+  hit.addEventListener('touchstart', mostrar, {passive:true});
+  hit.addEventListener('touchmove', mostrar, {passive:true});
+}
+
 montarMapa();
+carregarHistorico().then(desenharGrafico);
+setInterval(() => carregarHistorico().then(desenharGrafico), 120000);
 let falta = 0;
 setInterval(() => {
   if (--falta <= 0) { falta = INTERVALO; atualizar(); }
