@@ -31,7 +31,7 @@ def baixar(caminho):
 def municipio(uf, cd):
     d = baixar(f'{uf}/{uf}{cd}-c0001-e006258-u.jws')
     votos = {c['n']: int(c['vap']) for a in d['carg'][0]['agr'] for par in a['par'] for c in par['cand']}
-    return votos, int(d['s']['st'])
+    return votos, int(d['s']['st']), int(d['e']['te']), int(d['e']['c'])
 
 def main():
     abr = {}
@@ -46,11 +46,12 @@ def main():
     total = sum(1 for uf in UFS for m in abr[uf] if m.get('tpabr') == 'mun')
     print(f'{len(fechados)} de {total} municípios finalizados')
 
-    eventos, falhas = [], 0
+    eventos, falhas, muns = [], 0, []
     def um(item):
         uf, cd, t = item
         try:
-            v, st = municipio(uf, cd)
+            v, st, te, c = municipio(uf, cd)
+            muns.append([uf, cd, te, c, v])
             h = FUSO.get(uf, 0) - (1 if nomes.get((uf, cd)) == NORONHA else 0)
             return (datetime.strptime(t, '%d/%m/%Y %H:%M:%S') + timedelta(hours=h), v, st)
         except Exception:
@@ -76,6 +77,8 @@ def main():
             'municipios_total': total, 'falhas': falhas}
     json.dump({'meta': meta, 'serie': serie}, open('historico_reconstruido.json', 'w', encoding='utf8'),
               separators=(',', ':'))
+    # por município, para os testes estatísticos da página: [uf, cod, eleitorado, comparecimento, {cand: votos}]
+    json.dump({'meta': meta, 'municipios': muns}, open('municipios.json', 'w', encoding='utf8'), separators=(',', ':'))
     print(meta, len(serie), 'pontos', serie[0]['t'], '->', serie[-1]['t'])
 
 main()

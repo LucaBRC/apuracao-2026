@@ -104,18 +104,20 @@
       <div id="grafInfo" class="mut">toque ou passe o mouse no gráfico</div>
     </div>
     <div class="card">
-      <div class="mut">Detector de comportamento anormal</div>
+      <div class="mut">Detector de comportamento anormal · testes estatísticos da literatura</div>
       <div id="anom"></div>
-      <details id="regras"><summary>Como funciona (regras fixas, iguais para todos os candidatos)</summary>
-        <p>Compara cada ponto do histórico com o anterior. As mesmas regras e limites valem para todos os candidatos, nos dois sentidos (alta ou baixa), e foram fixadas antes de ver os dados.</p>
+      <div id="klimek"></div>
+      <details id="regras"><summary>Como funciona (métodos, limites e referências)</summary>
+        <p>Só métodos estatísticos gerais de perícia eleitoral, sem regra específica do TSE. Todo teste roda igual para cada candidato. Os limites foram fixados antes de olhar os dados. Unidade de análise: <b>municípios já 100% apurados</b> (exterior fora).</p>
         <ol>
-          <li><b>Votos acumulados diminuíram</b>: soma de votos nunca deveria cair. Indica correção ou erro de dado.</li>
-          <li><b>% apurado diminuiu</b>: idem.</li>
-          <li><b>Votos sem seções novas</b>: entraram votos mas o número de seções totalizadas não mudou.</li>
-          <li><b>Votos por seção fora do padrão</b>: votos novos ÷ seções novas, comparado à mediana do próprio histórico (z robusto, mediana/MAD, |z| &gt; 4, mín. 8 intervalos).</li>
-          <li><b>Mudança brusca na fatia dos votos novos</b>: % de cada candidato só entre os votos que entraram no intervalo, mesmo teste de z robusto. Isso é comum e esperado: estados e regiões totalizam em horários diferentes.</li>
+          <li><b>Último dígito</b> (Beber &amp; Scacco, 2012): em contagens de 100 votos ou mais, o último algarismo deveria ser uniforme (10% cada). Teste qui-quadrado, 9 g.l.</li>
+          <li><b>2º dígito de Benford</b> (Mebane, 2006): compara o segundo algarismo das contagens com a lei de Benford. Teste qui-quadrado, 9 g.l. É controverso (Deckert, Myagkov &amp; Ordeshook, 2011) e por isso pesa pouco sozinho.</li>
+          <li><b>Picos em porcentagens inteiras</b> (Kobak, Shpilkin &amp; Pshenichnikov, 2016): números inventados tendem a cair em valores "redondos". Em municípios com 1.000 votos ou mais, mede quantos têm comparecimento ou % de cada candidato a menos de 0,05 ponto de um inteiro (esperado: 10%). Teste binomial unilateral.</li>
+          <li><b>Impressão digital eleitoral</b> (Klimek et al., PNAS 2012): histograma 2D de comparecimento × % do candidato. Enchimento de urna aparece como uma mancha perto de 100% de comparecimento e 100% de voto. Mede a fração do eleitorado em municípios com comparecimento de 95% ou mais e algum candidato com 95% ou mais.</li>
+          <li><b>Série temporal</b>: a soma acumulada de votos não pode diminuir (monotonicidade). A fatia de cada candidato entre os votos novos de cada intervalo passa por um filtro de Hampel (z robusto mediana/MAD, |z| &gt; 4, mínimo de 8 intervalos). Mudanças bruscas são esperadas, porque regiões diferentes totalizam em horários diferentes.</li>
         </ol>
-        <p>Um alerta é só uma marca estatística para olhar com mais atenção. Não é prova de erro nem de fraude.</p>
+        <p><b>Múltiplos testes</b>: os testes 1 a 3 somam 7 p-valores. Para "fora do esperado" vale a correção de Bonferroni: p &lt; 0,01/7 ≈ 0,0014.</p>
+        <p><b>Limites</b>: a amostra é só de municípios já fechados. Primeiro fecham os pequenos, então ela é enviesada até o fim da apuração. Testes de dígitos têm baixo poder e geram falso positivo em dado real. Nenhum teste prova fraude: um sinal pede investigação em nível de seção/boletim de urna.</p>
       </details>
     </div>
     <div class="card">
@@ -385,59 +387,126 @@ function desenharGrafico() {
   hit.addEventListener('touchmove', mostrar, {passive:true});
 }
 
-// claude---(anomalias): regras fixas e simétricas sobre o histórico (ver <details id="regras">)
-const Z_LIM = 4, MIN_INT = 8;
+// claude---(anomalias): testes estatísticos gerais (literatura de perícia eleitoral), simétricos por candidato
+const Z_LIM = 4, MIN_INT = 8, ALFA = 0.01 / 7;
+let muns = [], munsMeta = null;
+async function carregarMunicipios() {
+  try {
+    const r = await fetch('municipios.json?nocache=' + Date.now(), {cache:'no-store'});
+    if (r.ok) { const j = await r.json(); muns = j.municipios || []; munsMeta = j.meta; }
+  } catch (e) {}
+}
 function mediana(a) { const b = [...a].sort((x, y) => x - y), m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; }
 function zRobusto(vals) {
   const med = mediana(vals), mad = mediana(vals.map(v => Math.abs(v - med))) * 1.4826;
   return vals.map(v => mad > 0 ? (v - med) / mad : 0);
 }
-function detectar() {
-  const cands = (dados.BR && dados.BR.cands) || [];
+// p-valor da qui-quadrado: Q(k/2, x/2), gama incompleta regularizada (Numerical Recipes)
+function lnGamma(z) { const c = [76.18009172947146,-86.50532032941677,24.01409824083091,-1.231739572450155,0.1208650973866179e-2,-0.5395239384953e-5];
+  let x = z, y = z, t = x + 5.5; t -= (x + 0.5) * Math.log(t); let s = 1.000000000190015; for (const q of c) s += q / ++y; return -t + Math.log(2.5066282746310005 * s / x); }
+function gammaQ(a, x) {
+  if (x <= 0) return 1;
+  if (x < a + 1) { let sum = 1 / a, del = sum, ap = a; for (let n = 0; n < 500; n++) { ap++; del *= x / ap; sum += del; if (Math.abs(del) < Math.abs(sum) * 1e-14) break; }
+    return 1 - sum * Math.exp(-x + a * Math.log(x) - lnGamma(a)); }
+  let b = x + 1 - a, c = 1e300, d = 1 / b, h = d;
+  for (let i = 1; i < 500; i++) { const an = -i * (i - a); b += 2; d = an * d + b; if (Math.abs(d) < 1e-300) d = 1e-300; c = b + an / c; if (Math.abs(c) < 1e-300) c = 1e-300; d = 1 / d; const del = d * c; h *= del; if (Math.abs(del - 1) < 1e-14) break; }
+  return Math.exp(-x + a * Math.log(x) - lnGamma(a)) * h;
+}
+function quiQuadrado(obs, esp) { let x = 0; for (let i = 0; i < obs.length; i++) x += (obs[i] - esp[i]) ** 2 / esp[i]; return {x, p: gammaQ((obs.length - 1) / 2, x / 2)}; }
+function pNormalSup(z) { // P(Z > z)
+  const t = 1 / (1 + 0.2316419 * Math.abs(z)), d = 0.3989423 * Math.exp(-z * z / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return z > 0 ? p : 1 - p;
+}
+const BENFORD2 = [...Array(10)].map((_, d) => { let p = 0; for (let k = 1; k <= 9; k++) p += Math.log10(1 + 1 / (10 * k + d)); return p; });
+const fmtP = p => p < 1e-4 ? p.toExponential(1).replace('.', ',') : p.toLocaleString('pt-BR', {maximumFractionDigits:4});
+const somaVotos = m => Object.values(m[4]).reduce((a, b) => a + b, 0);
+
+function testesMunicipais(cands) {
+  const res = [];
+  if (muns.length < 200) return res;
+  for (const c of cands) {
+    const n = muns.map(m => m[4][c.n] || 0);
+    const u = n.filter(v => v >= 100), cont = Array(10).fill(0); u.forEach(v => cont[v % 10]++);
+    const t1 = quiQuadrado(cont, Array(10).fill(u.length / 10));
+    res.push({teste: 'Último dígito', alvo: c, n: u.length, est: `χ²=${t1.x.toFixed(1)}`, p: t1.p});
+    const b = n.filter(v => v >= 10), c2 = Array(10).fill(0); b.forEach(v => c2[+String(v)[1]]++);
+    const t2 = quiQuadrado(c2, BENFORD2.map(p => p * b.length));
+    res.push({teste: '2º dígito de Benford', alvo: c, n: b.length, est: `χ²=${t2.x.toFixed(1)}`, p: t2.p});
+  }
+  const grandes = muns.filter(m => m[3] >= 1000);
+  const picos = (nome, alvo, f) => {
+    const xs = grandes.map(f), k = xs.filter(x => Math.abs(x - Math.round(x)) < 0.05).length, N = xs.length;
+    const z = (k - 0.1 * N) / Math.sqrt(N * 0.1 * 0.9);
+    res.push({teste: nome, alvo, n: N, est: `${(k / N * 100).toFixed(1)}% inteiros (esp. 10%)`, p: pNormalSup(z)});
+  };
+  picos('Picos inteiros · comparecimento', null, m => m[3] / m[2] * 100);
+  for (const c of cands) picos('Picos inteiros · % do candidato', c, m => (m[4][c.n] || 0) / Math.max(1, somaVotos(m)) * 100);
+  return res;
+}
+
+function testesSerie(cands) {
   const nome = n => (cands.find(c => c.n === n) || {}).nome || n;
-  const al = [];
-  const ints = [];
+  const al = [], ints = [];
   for (let i = 1; i < hist.length; i++) {
     const a = hist[i - 1], b = hist[i], hora = b.t.split(' ')[1];
-    const ns = Object.keys(b.v);
     let dTot = 0; const dv = {};
-    for (const n of ns) { dv[n] = (b.v[n] || 0) - (a.v[n] || 0); dTot += dv[n]; }
-    for (const n of ns) if (dv[n] < 0)
-      al.push({t: b.t, nivel: 'forte', msg: `${hora} · votos de ${nome(n)} caíram ${(-dv[n]).toLocaleString('pt-BR')}`});
-    if (b.pst < a.pst - 0.005) al.push({t: b.t, nivel: 'forte', msg: `${hora} · % apurado caiu de ${fmt(a.pst)} para ${fmt(b.pst)}`});
-    const temSt = a.st != null && b.st != null, dSt = temSt ? b.st - a.st : null;
-    if (temSt && dSt === 0 && dTot > 0)
-      al.push({t: b.t, nivel: 'medio', msg: `${hora} · +${dTot.toLocaleString('pt-BR')} votos sem nenhuma seção nova`});
-    if (dTot > 0) ints.push({t: b.t, hora, dTot, dSt, fatia: Object.fromEntries(ns.map(n => [n, dv[n] / dTot * 100]))});
+    for (const n of Object.keys(b.v)) { dv[n] = (b.v[n] || 0) - (a.v[n] || 0); dTot += dv[n]; }
+    for (const n of Object.keys(dv)) if (dv[n] < 0)
+      al.push({t: b.t, nivel: 'forte', msg: `${hora} · monotonicidade: votos acumulados de ${nome(n)} caíram ${(-dv[n]).toLocaleString('pt-BR')}`});
+    if (dTot > 0) ints.push({t: b.t, hora, fatia: Object.fromEntries(Object.keys(dv).map(n => [n, dv[n] / dTot * 100]))});
   }
-  const comSt = ints.filter(x => x.dSt > 0);
-  if (comSt.length >= MIN_INT) {
-    const z = zRobusto(comSt.map(x => x.dTot / x.dSt)), med = mediana(comSt.map(x => x.dTot / x.dSt));
-    comSt.forEach((x, i) => { if (Math.abs(z[i]) > Z_LIM)
-      al.push({t: x.t, nivel: 'medio', msg: `${x.hora} · ${Math.round(x.dTot / x.dSt)} votos por seção nova (mediana ${Math.round(med)}, z=${z[i].toFixed(1)})`}); });
-  }
-  if (ints.length >= MIN_INT) for (const n of cands.map(c => c.n)) {
-    const vals = ints.map(x => x.fatia[n] || 0), z = zRobusto(vals), med = mediana(vals);
+  if (ints.length >= MIN_INT) for (const c of cands) {
+    const vals = ints.map(x => x.fatia[c.n] || 0), z = zRobusto(vals), med = mediana(vals);
     ints.forEach((x, i) => { if (Math.abs(z[i]) > Z_LIM)
-      al.push({t: x.t, nivel: 'info', msg: `${x.hora} · ${nome(n)} levou ${vals[i].toFixed(1)}% dos votos novos (mediana ${med.toFixed(1)}%, z=${z[i].toFixed(1)})`}); });
+      al.push({t: x.t, nivel: 'info', msg: `${x.hora} · Hampel: ${c.nome} levou ${vals[i].toFixed(1)}% dos votos novos (mediana ${med.toFixed(1)}%, z=${z[i].toFixed(1)})`}); });
   }
   return {al: al.sort((a, b) => paraMs(b.t) - paraMs(a.t)), nInt: ints.length};
 }
+
+function desenharKlimek(cands) {
+  const el = document.getElementById('klimek');
+  if (muns.length < 200 || !cands.length) { el.innerHTML = ''; return; }
+  const c = cands[0], N = 40, grid = Array(N * N).fill(0);
+  let extremo = 0, eleit = 0;
+  for (const m of muns) {
+    const tot = somaVotos(m); if (!tot || !m[2]) continue;
+    const comp = m[3] / m[2], sh = (m[4][c.n] || 0) / tot;
+    grid[Math.min(N - 1, Math.floor(sh * N)) * N + Math.min(N - 1, Math.floor(comp * N))] += m[3];
+    eleit += m[2];
+    if (comp >= 0.95 && (sh >= 0.95 || sh <= 0.05)) extremo += m[2];
+  }
+  const mx = Math.max(...grid), W = 300, cs = W / N;
+  let r = '';
+  grid.forEach((v, i) => { if (!v) return; const x = (i % N) * cs, y = W - (Math.floor(i / N) + 1) * cs;
+    r += `<rect x="${x}" y="${y}" width="${cs}" height="${cs}" fill="#fbbf24" opacity="${(0.15 + 0.85 * Math.sqrt(v / mx)).toFixed(2)}"/>`; });
+  const fr = eleit ? extremo / eleit * 100 : 0;
+  el.innerHTML = `<div class="mut" style="margin-top:10px">Impressão digital (Klimek 2012): cada quadrado = municípios, peso = votantes</div>
+    <svg viewBox="-34 -6 344 340" style="max-width:420px"><rect x="0" y="0" width="${W}" height="${W}" fill="#11141a"/>${r}
+    <text x="${W/2}" y="${W + 26}" text-anchor="middle" fill="#8b93a5" font-size="12">comparecimento 0 → 100%</text>
+    <text x="-22" y="${W/2}" text-anchor="middle" fill="#8b93a5" font-size="12" transform="rotate(-90 -22 ${W/2})">% ${c.nome} 0 → 100% (100% = ${cands[1] ? cands[1].nome : ''} 0%)</text></svg>
+    <div class="alerta ${fr > 0.5 ? 'medio' : ''}" style="${fr > 0.5 ? '' : 'border-color:#22c55e'}">Eleitorado em municípios com comparecimento ≥ 95% e um candidato ≥ 95%: <b>${fr.toFixed(2).replace('.', ',')}%</b> ${fr > 0.5 ? '(acima de 0,5%: olhar com atenção)' : '(sem mancha de enchimento)'}</div>`;
+}
+
 function desenharAnomalias() {
   const el = document.getElementById('anom');
-  const {al, nInt} = detectar();
-  const base = `<div class="mut" style="margin:4px 0">${hist.length} pontos · ${nInt} intervalos analisados` +
-    (nInt < MIN_INT ? ` · testes estatísticos (4 e 5) ligam com ${MIN_INT} intervalos` : '') + '</div>';
-  el.innerHTML = base + (al.length
-    ? al.slice(0, 30).map(a => `<div class="alerta ${a.nivel}">${a.msg}</div>`).join('')
-    : '<div class="alerta" style="border-color:#22c55e">Nenhum comportamento fora das regras até agora.</div>');
+  const cands = (dados.BR && dados.BR.cands) || [];
+  const tm = testesMunicipais(cands), {al, nInt} = testesSerie(cands);
+  let h = `<div class="mut" style="margin:4px 0">${munsMeta ? `${muns.length} municípios fechados (de ${munsMeta.municipios_total}), dados de ${munsMeta.gerado.split(' ')[1]}` : 'carregando municípios…'} · série: ${hist.length} pontos</div>`;
+  if (tm.length) h += '<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th>Teste</th><th>Alvo</th><th>Estatística</th><th>p</th><th></th></tr></thead><tbody>' +
+    tm.map(t => { const fora = t.p < ALFA; return `<tr><td>${t.teste}</td><td style="color:${t.alvo ? COR_CAND[t.alvo.n] : '#ccc'}">${t.alvo ? t.alvo.nome.split(' ')[0] : 'todos'}</td><td>${t.est}</td><td>${fmtP(t.p)}</td><td>${fora ? '<b style="color:#facc15">fora</b>' : '<span style="color:#22c55e">ok</span>'}</td></tr>`; }).join('') + '</tbody></table></div>';
+  h += `<div class="mut" style="margin:8px 0 2px">Série temporal (${nInt} intervalos${nInt < MIN_INT ? `; Hampel liga com ${MIN_INT}` : ''})</div>`;
+  h += al.length ? al.slice(0, 20).map(a => `<div class="alerta ${a.nivel}">${a.msg}</div>`).join('')
+                 : '<div class="alerta" style="border-color:#22c55e">Nada fora do padrão na série.</div>';
+  el.innerHTML = h;
+  desenharKlimek(cands);
 }
 
 montarMapa();
 const redesenharHist = () => { desenharGrafico(); desenharAnomalias(); };
 window.addEventListener('resize', () => desenharGrafico());
-carregarHistorico().then(redesenharHist);
-setInterval(() => carregarHistorico().then(redesenharHist), 120000);
+Promise.all([carregarHistorico(), carregarMunicipios()]).then(redesenharHist);
+setInterval(() => Promise.all([carregarHistorico(), carregarMunicipios()]).then(redesenharHist), 120000);
 let falta = 0;
 setInterval(() => {
   if (--falta <= 0) { falta = INTERVALO; atualizar(); }
