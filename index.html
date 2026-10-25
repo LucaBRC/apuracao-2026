@@ -99,6 +99,7 @@
     </div>
     <div class="card" id="graf">
       <div class="mut">Votos × horário da totalização (Brasil)</div>
+      <div id="grafLeg" class="mut" style="margin:4px 0"></div>
       <svg id="grafSvg" viewBox="0 0 600 260"></svg>
       <div id="grafInfo" class="mut">toque ou passe o mouse no gráfico</div>
     </div>
@@ -327,7 +328,9 @@ const fmtVotos = n => n >= 1e6 ? (n / 1e6).toLocaleString('pt-BR', {maximumFract
 const hhmm = ms => new Date(ms).toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit', timeZone:'America/Sao_Paulo'});
 function desenharGrafico() {
   const svg = document.getElementById('grafSvg');
-  const W = 600, H = 260, L = 52, R = 14, T = 12, B = 26;
+  // claude---(mobile): viewBox na largura real, para o texto dos eixos não encolher no celular
+  const W = Math.round(Math.max(300, Math.min(700, svg.clientWidth || 600))), H = Math.round(W < 500 ? 230 : 260), L = 52, R = 14, T = 12, B = 26;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   const cands = (dados.BR && dados.BR.cands) || [];
   if (hist.length < 2 || !cands.length) {
     svg.innerHTML = `<text x="${W/2}" y="${H/2}" text-anchor="middle" class="eixo">juntando pontos… (${hist.length})</text>`;
@@ -355,6 +358,7 @@ function desenharGrafico() {
   g += `<line id="grafCursor" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="#fff6" stroke-width="1" style="display:none"/>`;
   g += `<rect id="grafHit" x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent"/>`;
   svg.innerHTML = g;
+  document.getElementById('grafLeg').innerHTML = cands.map(c => `<span style="color:${COR_CAND[c.n]}">━ ${c.nome}</span>`).join(' &nbsp; ') + ' · eixo começa em zero';
   const info = document.getElementById('grafInfo');
   const mostrar = ev => {
     const bb = svg.getBoundingClientRect();
@@ -423,6 +427,7 @@ function desenharAnomalias() {
 
 montarMapa();
 const redesenharHist = () => { desenharGrafico(); desenharAnomalias(); };
+window.addEventListener('resize', () => desenharGrafico());
 carregarHistorico().then(redesenharHist);
 setInterval(() => carregarHistorico().then(redesenharHist), 120000);
 let falta = 0;
