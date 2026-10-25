@@ -11,14 +11,16 @@ permissions:
 jobs:
   coletar:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 14
     steps:
       - uses: actions/checkout@v4
       - run: python coletar.py 5
+      - run: python reconstruir.py
+        continue-on-error: true
       - run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
-          git add historico.json
+          git add historico.json historico_reconstruido.json
           git diff --cached --quiet && exit 0
           git commit -m "historico: novo ponto"
           git pull --rebase -q && git push

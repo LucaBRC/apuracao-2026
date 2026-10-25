@@ -304,7 +304,7 @@ document.getElementById('mLid').onclick = () => { modo='lid'; mLid.classList.add
 
 
 // claude---(grafico): histórico = historico.json (GitHub Actions, a cada ~1 min) + pontos vistos neste aparelho
-let hist = [];
+let hist = [], recon = [], reconMeta = null;
 const CHAVE = 'apuracao2026_hist';
 function paraMs(t) { const [d, h] = t.split(' '); const [dd, mm, aa] = d.split('/'); return new Date(`${aa}-${mm}-${dd}T${h}-03:00`).getTime(); }
 function juntar(pontos) {
@@ -315,6 +315,10 @@ function juntar(pontos) {
 }
 try { juntar(JSON.parse(localStorage.getItem(CHAVE) || '[]')); } catch (e) {}
 async function carregarHistorico() {
+  try {
+    const rr = await fetch('historico_reconstruido.json?nocache=' + Date.now(), {cache:'no-store'});
+    if (rr.ok) { const j = await rr.json(); recon = j.serie || []; reconMeta = j.meta; }
+  } catch (e) {}
   try {
     const r = await fetch('historico.json?nocache=' + Date.now(), {cache:'no-store'});
     if (r.ok) juntar(await r.json());
@@ -332,13 +336,14 @@ function desenharGrafico() {
   const W = Math.round(Math.max(300, Math.min(700, svg.clientWidth || 600))), H = Math.round(W < 500 ? 230 : 260), L = 52, R = 14, T = 12, B = 26;
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   const cands = (dados.BR && dados.BR.cands) || [];
-  if (hist.length < 2 || !cands.length) {
+  if (hist.length + recon.length < 2 || !cands.length) {
     svg.innerHTML = `<text x="${W/2}" y="${H/2}" text-anchor="middle" class="eixo">juntando pontos… (${hist.length})</text>`;
     return;
   }
-  const xs = hist.map(p => paraMs(p.t));
-  const x0 = xs[0], x1 = xs[xs.length - 1];
-  let ymax = 0; hist.forEach(p => cands.forEach(c => ymax = Math.max(ymax, p.v[c.n] || 0)));
+  const todos = hist.map(p => Object.assign({rec:false}, p)).concat(recon.map(p => Object.assign({rec:true}, p)));
+  const xs = todos.map(p => paraMs(p.t));
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  let ymax = 0; todos.forEach(p => cands.forEach(c => ymax = Math.max(ymax, p.v[c.n] || 0)));
   ymax *= 1.05;
   const X = ms => L + (ms - x0) / Math.max(1, x1 - x0) * (W - L - R);
   const Y = v => T + (1 - v / ymax) * (H - T - B);
@@ -352,23 +357,26 @@ function desenharGrafico() {
     g += `<text class="eixo" x="${X(ms)}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : i === 4 ? 'end' : 'middle'}">${hhmm(ms)}</text>`;
   }
   for (const c of cands) {
+    const pr = recon.filter(p => p.v[c.n] != null).map(p => `${X(paraMs(p.t)).toFixed(1)},${Y(p.v[c.n]).toFixed(1)}`).join(' ');
+    if (pr) g += `<polyline fill="none" stroke="${COR_CAND[c.n] || '#aaa'}" stroke-width="2" stroke-dasharray="5 4" opacity=".8" points="${pr}"/>`;
     const pts = hist.filter(p => p.v[c.n] != null).map(p => `${X(paraMs(p.t)).toFixed(1)},${Y(p.v[c.n]).toFixed(1)}`).join(' ');
     g += `<polyline fill="none" stroke="${COR_CAND[c.n] || '#aaa'}" stroke-width="2.5" stroke-linejoin="round" points="${pts}"/>`;
   }
   g += `<line id="grafCursor" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="#fff6" stroke-width="1" style="display:none"/>`;
   g += `<rect id="grafHit" x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent"/>`;
   svg.innerHTML = g;
-  document.getElementById('grafLeg').innerHTML = cands.map(c => `<span style="color:${COR_CAND[c.n]}">━ ${c.nome}</span>`).join(' &nbsp; ') + ' · eixo começa em zero';
+  document.getElementById('grafLeg').innerHTML = cands.map(c => `<span style="color:${COR_CAND[c.n]}">━ ${c.nome}</span>`).join(' &nbsp; ') + ' · eixo começa em zero<br>━ ao vivo (total do TSE) &nbsp; ┅ reconstruído desde 17h: soma de cada município no horário em que fechou 100%' +
+    (reconMeta ? ` (${reconMeta.municipios_fechados} de ${reconMeta.municipios_total} municípios, gerado ${reconMeta.gerado.split(' ')[1]}; sem exterior)` : '');
   const info = document.getElementById('grafInfo');
   const mostrar = ev => {
     const bb = svg.getBoundingClientRect();
     const px = ((ev.touches ? ev.touches[0].clientX : ev.clientX) - bb.left) / bb.width * W;
     const ms = x0 + (px - L) / (W - L - R) * (x1 - x0);
-    let best = hist[0];
-    for (const p of hist) if (Math.abs(paraMs(p.t) - ms) < Math.abs(paraMs(best.t) - ms)) best = p;
+    let best = todos[0];
+    for (const p of todos) if (Math.abs(paraMs(p.t) - ms) < Math.abs(paraMs(best.t) - ms)) best = p;
     const cur = document.getElementById('grafCursor'), cx = X(paraMs(best.t));
     cur.setAttribute('x1', cx); cur.setAttribute('x2', cx); cur.style.display = '';
-    info.innerHTML = `<b>${best.t.split(' ')[1]}</b> · ${fmt(best.pst)} apurado · ` +
+    info.innerHTML = `<b>${best.t.split(' ')[1]}</b> · ` + (best.rec ? `reconstruído (${best.st.toLocaleString('pt-BR')} seções de municípios fechados) · ` : `${fmt(best.pst)} apurado · `) +
       cands.map(c => `<span style="color:${COR_CAND[c.n]}">${c.nome}: ${(best.v[c.n] || 0).toLocaleString('pt-BR')}</span>`).join(' · ');
   };
   const hit = document.getElementById('grafHit');
