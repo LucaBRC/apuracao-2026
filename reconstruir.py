@@ -37,7 +37,9 @@ def baixar(caminho):
 def municipio(uf, cd):
     d = baixar(f'{uf}/{uf}{cd}-c0001-e006258-u.jws')
     votos = {c['n']: int(c['vap']) for a in d['carg'][0]['agr'] for par in a['par'] for c in par['cand']}
-    return votos, int(d['s']['st']), int(d['e']['te']), int(d['e']['c']), int(d['v']['vb']) + int(d['v']['tvn'])
+    # claude---(selos): 'fechado' vem do próprio arquivo do município (o índice -ab pode estar mais novo que ele no CDN)
+    fin = d.get('and') == 'f' and d['s']['st'] == d['s']['ts']
+    return votos, int(d['s']['st']), int(d['e']['te']), int(d['e']['c']), int(d['v']['vb']) + int(d['v']['tvn']), fin
 
 def main():
     abr = {}
@@ -59,7 +61,8 @@ def main():
     def um(item):
         uf, cd, t, fin = item
         try:
-            v, st, te, c, bn = municipio(uf, cd)
+            v, st, te, c, bn, fin_arq = municipio(uf, cd)
+            fin = fin and fin_arq
             muns.append([uf, cd, te, c, v, 1 if fin else 0, ibge.get((uf, cd), ''), bn])
             if not fin: return 'aberto'
             h = FUSO.get(uf, 0) - (1 if nomes.get((uf, cd)) == NORONHA else 0)
