@@ -126,6 +126,10 @@
       <div id="turnos"></div>
     </div>
     <div class="card">
+      <div class="mut">1º × 2º turno: análise pesada por município (referência: 2022)</div>
+      <div id="pesado"></div>
+    </div>
+    <div class="card">
       <div class="mut">Imutabilidade: municípios fechados não podem mudar depois</div>
       <div id="imut"></div>
     </div>
@@ -581,6 +585,7 @@ function desenharAnomalias() {
   desenharComparacao();
   desenharBateria();
   desenharImut();
+  desenharPesado();
 }
 
 // claude---(comparacao): mesmos testes em 2022 e 2018 (Dados Abertos do TSE) + consistência município a município
@@ -703,9 +708,9 @@ function desenharTurnos() {
 }
 
 // claude---(bateria): testes adicionais de perícia eleitoral, 2026 × 2022 como referência, simétricos (PT e adversário)
-let t1mun = null;
+let t1mun = null, t1raw = null;
 async function carregarT1Mun() {
-  try { const r = await fetch('primeiro_turno_mun.json'); if (r.ok) { const j = await r.json(); t1mun = {}; j.forEach(m => t1mun[m[0] + m[1]] = m[2]); } } catch (e) {}
+  try { const r = await fetch('primeiro_turno_mun.json'); if (r.ok) { const j = await r.json(); t1mun = {}; t1raw = {}; j.forEach(m => { t1mun[m[0] + m[1]] = m[2]; t1raw[m[0] + m[1]] = m; }); } } catch (e) {}
 }
 function resolver3(A, b) { // eliminação de Gauss 3x3
   const M = A.map((l, i) => [...l, b[i]]);
@@ -807,6 +812,134 @@ function desenharImut() {
     const dv = Object.keys(a.depois.v).map(n => `${n}: ${(a.antes.v[n] || 0).toLocaleString('pt-BR')} → ${(a.depois.v[n] || 0).toLocaleString('pt-BR')}`).join(' · ');
     return `<div class="alerta forte">${a.quando.split(' ')[1]} · ${nomesMun[a.k] || a.k}/${a.k.slice(0, 2).toUpperCase()} mudou depois de fechado · ${dv} · comparecimento ${a.antes.c} → ${a.depois.c}</div>`;
   }).join('');
+  el.innerHTML = h;
+}
+
+// claude---(pesado): 1º × 2º turno por município — inferência ecológica de transferência (Goodman, por UF),
+// comparecimento novo × ganho de cada candidato, e forma da distribuição do swing (KS), sempre contra 2022
+function resolverN(A, b) {
+  const n = b.length, M = A.map((l, i) => [...l, b[i]]);
+  for (let i = 0; i < n; i++) {
+    let p = i; for (let k = i + 1; k < n; k++) if (Math.abs(M[k][i]) > Math.abs(M[p][i])) p = k;
+    [M[i], M[p]] = [M[p], M[i]];
+    if (Math.abs(M[i][i]) < 1e-12) return null;
+    for (let k = 0; k < n; k++) if (k !== i) { const f = M[k][i] / M[i][i]; for (let j = i; j <= n; j++) M[k][j] -= f * M[i][j]; }
+  }
+  return M.map((l, i) => l[n] / l[i]);
+}
+// cada município: frações do eleitorado no 1º turno (L1, F1, O1, N1) e no 2º (L2, F2, N2)
+function frac(m) {
+  const s1 = m.t1v, L1 = (s1['13'] || 0) / m.te1, F1 = (s1[m.adv] || 0) / m.te1;
+  const O1 = (somaObj(s1) - (s1['13'] || 0) - (s1[m.adv] || 0)) / m.te1, N1 = 1 - L1 - F1 - O1;
+  const L2 = (m.v['13'] || 0) / m.te2, F2 = (m.v[m.adv] || 0) / m.te2;
+  return {uf: m.uf, k: m.k, w: m.te2, L1, F1, O1, N1, L2, F2, N2: 1 - L2 - F2, dT: m.c2 / m.te2 - m.c1 / m.te1};
+}
+function goodman(g) { // y = β·[L1 F1 O1 N1], sem intercepto, ponderado
+  const X = p => [p.L1, p.F1, p.O1, p.N1], out = {};
+  for (const alvo of ['L2', 'F2']) {
+    const A = [...Array(4)].map(() => Array(4).fill(0)), b = Array(4).fill(0);
+    g.forEach(p => { const x = X(p); for (let i = 0; i < 4; i++) { b[i] += p.w * x[i] * p[alvo]; for (let j = 0; j < 4; j++) A[i][j] += p.w * x[i] * x[j]; } });
+    out[alvo] = resolverN(A, b);
+  }
+  return out.L2 && out.F2 ? out : null;
+}
+// intervalo de 95% por bootstrap (reamostra municípios), semente fixa para o resultado não mudar a cada recarga
+function bootstrapGoodman(g, B = 200) {
+  let sem = 12345; const rnd = () => (sem = (sem * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const amostras = [];
+  for (let k = 0; k < B; k++) { const r = goodman(g.map(() => g[Math.floor(rnd() * g.length)])); if (r) amostras.push([...r.L2, ...r.F2]); }
+  return [...Array(8)].map((_, i) => { const v = amostras.map(a => a[i]).sort((x, y) => x - y); return [v[Math.floor(v.length * 0.025)], v[Math.floor(v.length * 0.975)]]; });
+}
+function inclinacaoUF(lista, fx, fy) { // inclinação ponderada com efeito fixo de UF
+  const porUf = {}; lista.forEach(p => (porUf[p.uf] = porUf[p.uf] || []).push(p));
+  let sxy = 0, sxx = 0;
+  for (const uf in porUf) { const g = porUf[uf], W = g.reduce((s, p) => s + p.w, 0);
+    const mx = g.reduce((s, p) => s + p.w * fx(p), 0) / W, my = g.reduce((s, p) => s + p.w * fy(p), 0) / W;
+    g.forEach(p => { sxy += p.w * (fx(p) - mx) * (fy(p) - my); sxx += p.w * (fx(p) - mx) ** 2; }); }
+  return sxy / sxx;
+}
+function ksDuasAmostras(a, b) {
+  a = [...a].sort((x, y) => x - y); b = [...b].sort((x, y) => x - y);
+  let i = 0, j = 0, D = 0;
+  while (i < a.length && j < b.length) { const v = Math.min(a[i], b[j]); while (i < a.length && a[i] <= v) i++; while (j < b.length && b[j] <= v) j++; D = Math.max(D, Math.abs(i / a.length - j / b.length)); }
+  const ne = a.length * b.length / (a.length + b.length), lam = (Math.sqrt(ne) + 0.12 + 0.11 / Math.sqrt(ne)) * D;
+  let p = 0; for (let k = 1; k <= 100; k++) p += 2 * (k % 2 ? 1 : -1) * Math.exp(-2 * k * k * lam * lam);
+  return {D, p: Math.min(1, Math.max(0, p))};
+}
+function momentos(x) {
+  const n = x.length, m = x.reduce((s, v) => s + v, 0) / n, s2 = x.reduce((s, v) => s + (v - m) ** 2, 0) / n, sd = Math.sqrt(s2);
+  return {med: mediana(x), sd, ass: x.reduce((s, v) => s + ((v - m) / sd) ** 3, 0) / n, curt: x.reduce((s, v) => s + ((v - m) / sd) ** 4, 0) / n - 3};
+}
+
+function desenharPesado() {
+  const el = document.getElementById('pesado');
+  const cands = (dados.BR && dados.BR.cands) || [];
+  if (!anos || !t1raw || muns.length < 200 || !cands.length) { el.innerHTML = '<div class="mut">carregando…</div>'; return; }
+  if (!Object.keys(nomesMun).length) anos['2022'].municipios.forEach(x => nomesMun[x[0] + x[1]] = x[5]);
+  const adv = (cands.find(c => c.n !== '13') || {}).n || '22';
+  const ok = m => m.te1 > 0 && m.te2 > 0 && m.c2 >= 300 && somaObj(m.t1v) > 0;
+  const p26 = muns.map(m => { const t = t1raw[m[0] + m[1]]; return t && {uf: m[0], k: m[0] + m[1], adv, te2: m[2], c2: m[3], v: m[4], t1v: t[2], te1: t[3], c1: t[4]}; }).filter(m => m && ok(m)).map(frac);
+  const fech = {}; p26.forEach(p => fech[p.k] = 1);
+  const p22all = anos['2022'].municipios.map(m => ({uf: m[0], k: m[0] + m[1], adv: '22', te2: m[2], c2: m[3], v: m[4], t1v: m[7], te1: m[8], c1: m[9]})).filter(ok).map(frac);
+  const p22 = p22all.filter(p => fech[p.k]);
+  const f2 = x => x == null ? '–' : x.toFixed(2).replace('.', ','), pct = x => (x * 100).toFixed(1).replace('.', ',') + '%';
+  const nome = n => (cands.find(c => c.n === n) || {}).nome || n;
+  const divergencias = [];
+
+  // 1. Goodman por UF
+  const porUf = (l) => { const o = {}; l.forEach(p => (o[p.uf] = o[p.uf] || []).push(p)); return o; };
+  const u26 = porUf(p26), u22 = porUf(p22);
+  const implausivel = g => [...g.L2, ...g.F2].some(b => b < -0.1 || b > 1.1);
+  let h = '<div class="mut" style="margin:4px 0">1) Transferência estimada de votos do 1º para o 2º turno (regressão ecológica de Goodman por estado, ponderada). Linhas = estados com 20 ou mais municípios fechados.</div>';
+  h += '<div style="overflow-x:auto"><table style="font-size:11px"><thead><tr><th>UF</th><th>Lula→Lula</th><th>Flávio→Flávio</th><th>Outros→Lula</th><th>Outros→Flávio</th><th>Não votou→Lula</th><th>Não votou→Flávio</th><th>2022 ok?</th></tr></thead><tbody>';
+  for (const uf of UFS.map(u => u.toLowerCase())) {
+    const g = u26[uf], r = g && g.length >= 20 ? goodman(g) : null; if (!r) continue;
+    const r22 = u22[uf] && u22[uf].length >= 20 ? goodman(u22[uf]) : null;
+    const imp22 = r22 ? implausivel(r22) : null;
+    // só conta como divergência o que o intervalo de 95% sustenta: IC inteiro fora de [−0,1; 1,1],
+    // ou retenção (Lula→Lula, Flávio→Flávio) com IC sem sobreposição com o de 2022
+    const ic = bootstrapGoodman(g), ic22 = r22 ? bootstrapGoodman(u22[uf]) : null;
+    const imp = ic.some(([lo, hi]) => lo > 1.1 || hi < -0.1);
+    // retenção problemática = IC inteiro abaixo de 0,85 (debandada) ou acima de 1,1; só diverge se em 2022 não era
+    const retRuim = (lo, hi) => hi < 0.85 || lo > 1.1, ret22Ruim = i => r22 && (i === 0 ? r22.L2[0] : r22.F2[1]) < 0.85 || r22 && (i === 0 ? r22.L2[0] : r22.F2[1]) > 1.1;
+    const retDiverge = (retRuim(...ic[0]) && !ret22Ruim(0)) || (retRuim(...ic[5]) && !ret22Ruim(5));
+    const dRet = r22 ? Math.max(Math.abs(r.L2[0] - r22.L2[0]), Math.abs(r.F2[1] - r22.F2[1])) : 0;
+    const cel = (b, b22) => `<td style="color:${b < -0.1 || b > 1.1 ? '#facc15' : 'inherit'}">${f2(b)}${b22 != null ? `<span class="mut" style="font-size:10px"> (${f2(b22)})</span>` : ''}</td>`;
+    h += `<tr><td>${uf.toUpperCase()}</td>${cel(r.L2[0], r22 && r22.L2[0])}${cel(r.F2[1], r22 && r22.F2[1])}${cel(r.L2[2], r22 && r22.L2[2])}${cel(r.F2[2], r22 && r22.F2[2])}${cel(r.L2[3], r22 && r22.L2[3])}${cel(r.F2[3], r22 && r22.F2[3])}<td>${imp22 == null ? '–' : imp22 ? 'não' : 'sim'}</td></tr>`;
+    const nomesCoef = ['Lula→Lula', 'Flávio→Lula', 'Outros→Lula', 'Não votou→Lula', 'Lula→Flávio', 'Flávio→Flávio', 'Outros→Flávio', 'Não votou→Flávio'];
+    const est = [...r.L2, ...r.F2];
+    if (imp) ic.forEach(([lo, hi], i) => { if (lo > 1.1 || hi < -0.1) divergencias.push(`${uf.toUpperCase()}: ${nomesCoef[i]} = ${f2(est[i])} [IC 95% ${f2(lo)}; ${f2(hi)}], impossível (2022: ${r22 ? f2([...r22.L2, ...r22.F2][i]) : '–'}). Causa provável: viés ecológico de grupo pequeno; confirmar exigiria dado por seção.`); });
+    if (retDiverge) divergencias.push(`${uf.toUpperCase()}: retenção de voto diferente de 2022 (Lula ${f2(r.L2[0])} [${f2(ic[0][0])}; ${f2(ic[0][1])}], Flávio ${f2(r.F2[1])} [${f2(ic[5][0])}; ${f2(ic[5][1])}] × 2022 ${f2(r22.L2[0])}/${f2(r22.F2[1])})`);
+  }
+  h += '</tbody></table></div><div class="mut" style="font-size:11px">Entre parênteses: o mesmo estado em 2022 (Lula × Bolsonaro, mesmos municípios). Retenção perto de 1 = quem votou no candidato no 1º votou nele de novo. Amarelo = estimativa pontual fora de [−0,1; 1,1]. Grupo pequeno ("outros" ≈ 7% no 1º turno) dá estimativa muito instável, por isso só vira divergência o que o intervalo de 95% por bootstrap (200 reamostragens de municípios) sustenta.</div>';
+
+  // 2. comparecimento novo × ganho
+  const sL = l => inclinacaoUF(l, p => p.dT, p => p.L2 - p.L1), sF = l => inclinacaoUF(l, p => p.dT, p => p.F2 - p.F1);
+  const a26 = [sL(p26), sF(p26)], a22 = [sL(p22), sF(p22)];
+  h += `<div class="mut" style="margin:12px 0 4px">2) Para onde foi o comparecimento a mais do 2º turno (inclinação do ganho de cada candidato contra a variação de comparecimento, dentro de cada estado)</div>
+    <table style="font-size:12px"><thead><tr><th></th><th>2026</th><th>2022 mesmos mun.</th></tr></thead><tbody>
+    <tr><td style="color:#ef4444">Lula</td><td>${f2(a26[0])}</td><td>${f2(a22[0])}</td></tr>
+    <tr><td style="color:#3b82f6">${nome(adv).split(' ')[0]} / Bolsonaro</td><td>${f2(a26[1])}</td><td>${f2(a22[1])}</td></tr></tbody></table>
+    <div class="mut" style="font-size:11px">Cada eleitor a mais no 2º vira, em média, essa fração de voto para o candidato. Enchimento de urna para um lado puxaria a inclinação dele para perto de 1 (ou acima) e a do outro para perto de 0.</div>`;
+  if (Math.abs(a26[0] - a22[0]) > 0.3 || Math.abs(a26[1] - a22[1]) > 0.3) divergencias.push(`comparecimento novo: inclinações 2026 (${f2(a26[0])}/${f2(a26[1])}) diferem mais de 0,3 das de 2022 (${f2(a22[0])}/${f2(a22[1])})`);
+  if (a26[0] > 0.9 || a26[1] > 0.9) divergencias.push('comparecimento novo: um candidato absorve mais de 90% dos eleitores a mais');
+
+  // 3. forma da distribuição do swing (fatia do PT entre os dois, 1º→2º)
+  const sw = l => l.map(p => p.L2 / (p.L2 + p.F2) - p.L1 / (p.L1 + p.F1)).filter(Number.isFinite);
+  const w26 = sw(p26), w22 = sw(p22), m26 = momentos(w26), m22 = momentos(w22);
+  const pad = (x, m) => { const mad = mediana(x.map(v => Math.abs(v - m.med))) * 1.4826; return x.map(v => (v - m.med) / mad); };
+  const ks = ksDuasAmostras(pad(w26, m26), pad(w22, m22));
+  h += `<div class="mut" style="margin:12px 0 4px">3) Forma da distribuição do swing por município (variação da fatia do PT entre os dois candidatos, 1º→2º)</div>
+    <table style="font-size:12px"><thead><tr><th></th><th>mediana</th><th>desvio</th><th>assimetria</th><th>curtose</th></tr></thead><tbody>
+    <tr><td>2026</td><td>${f2(m26.med * 100)} pp</td><td>${f2(m26.sd * 100)} pp</td><td>${f2(m26.ass)}</td><td>${f2(m26.curt)}</td></tr>
+    <tr><td>2022 mesmos</td><td>${f2(m22.med * 100)} pp</td><td>${f2(m22.sd * 100)} pp</td><td>${f2(m22.ass)}</td><td>${f2(m22.curt)}</td></tr></tbody></table>
+    <div class="mut" style="font-size:11px">Kolmogorov-Smirnov das formas padronizadas: D = ${ks.D.toFixed(3).replace('.', ',')} (p = ${fmtP(ks.p)}). Com ~5 mil municípios, o p fica minúsculo por qualquer diferença, então o que importa é o D: abaixo de 0,10 = mesma forma. Manipulação concentrada em parte dos municípios costuma criar cauda longa (curtose alta) ou um segundo pico.</div>`;
+  if (ks.D > 0.1) divergencias.push(`forma do swing diferente de 2022 (KS D=${ks.D.toFixed(3)})`);
+  if (m26.curt > Math.max(3, 2 * m22.curt)) divergencias.push(`cauda do swing mais pesada que em 2022 (curtose ${f2(m26.curt)} × ${f2(m22.curt)})`);
+
+  h = `<div class="alerta ${divergencias.length ? 'medio' : ''}" style="${divergencias.length ? '' : 'border-color:#22c55e'}">${divergencias.length
+    ? '<b>Divergências em relação a 2022:</b><br>' + divergencias.join('<br>')
+    : `Nenhuma divergência estranha: ${p26.length} municípios, transferência 1º→2º, destino do comparecimento novo e forma do swing seguem o padrão de 2022.`}</div>` + h;
   el.innerHTML = h;
 }
 

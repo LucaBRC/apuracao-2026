@@ -20,7 +20,9 @@ def um(a):
     uf, cd = a
     try:
         d = baixar(f'{uf}/{uf}{cd}-c0001-e006257-u.jws')
-        return [uf, cd, {c['n']: int(c['vap']) for x in d['carg'][0]['agr'] for p in x['par'] for c in p['cand']}]
+        # [uf, cod, {cand: votos}, eleitorado, comparecimento, brancos+nulos]
+        return [uf, cd, {c['n']: int(c['vap']) for x in d['carg'][0]['agr'] for p in x['par'] for c in p['cand']},
+                int(d['e']['te']), int(d['e']['c']), int(d['v']['vb']) + int(d['v']['tvn'])]
     except Exception:
         return None
 with ThreadPoolExecutor(16) as ex:

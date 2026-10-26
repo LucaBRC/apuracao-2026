@@ -69,7 +69,8 @@ def main():
             return (datetime.strptime(t, '%d/%m/%Y %H:%M:%S') + timedelta(hours=h), v, st)
         except Exception:
             return None
-    with ThreadPoolExecutor(16) as ex:
+    # 6 conexões: com 16 o TSE começa a responder 429 (pedidos demais)
+    with ThreadPoolExecutor(6) as ex:
         for i, r in enumerate(ex.map(um, todos)):
             if r == 'aberto': continue
             if r: eventos.append(r)
