@@ -14,15 +14,20 @@ def ano(a):
     muns = {}
     def m(r):
         k = (r['SG_UF'].lower(), r['CD_MUNICIPIO'].zfill(5))
-        return muns.setdefault(k, {'nm': r['NM_MUNICIPIO'], 'aptos': 0, 'comp': 0, 'v': {}})
+        return muns.setdefault(k, {'nm': r['NM_MUNICIPIO'], 'aptos': 0, 'comp': 0, 'v': {}, 'bn': 0, 't1': {}})
     for r in linhas(f'd{a}.zip', f'detalhe_votacao_munzona_{a}_BRASIL.csv'):
         if r['NR_TURNO'] == '2' and r['CD_CARGO'] == '1' and r['SG_UF'] != 'ZZ':
             x = m(r); x['aptos'] += int(r['QT_APTOS']); x['comp'] += int(r['QT_COMPARECIMENTO'])
+            x['bn'] += int(r['QT_VOTOS_BRANCOS']) + int(r['QT_TOTAL_VOTOS_NULOS'])
     for r in linhas(f'p{a}.zip', f'votacao_partido_munzona_{a}_BRASIL.csv'):
         if r['NR_TURNO'] == '2' and r['CD_CARGO'] == '1' and r['SG_UF'] != 'ZZ':
             x = m(r); n = r['NR_PARTIDO']
             x['v'][n] = x['v'].get(n, 0) + int(r['QT_VOTOS_NOMINAIS_VALIDOS'])
-    lista = [[uf, cd, x['aptos'], x['comp'], x['v'], x['nm']] for (uf, cd), x in sorted(muns.items())]
+        elif r['NR_TURNO'] == '1' and r['CD_CARGO'] == '1' and r['SG_UF'] != 'ZZ':
+            x = m(r); n = r['NR_PARTIDO']
+            x['t1'][n] = x['t1'].get(n, 0) + int(r['QT_VOTOS_NOMINAIS_VALIDOS'])
+    # [uf, cod, aptos, comparecimento, votos 2º turno, nome, brancos+nulos 2º turno, votos 1º turno]
+    lista = [[uf, cd, x['aptos'], x['comp'], x['v'], x['nm'], x['bn'], x['t1']] for (uf, cd), x in sorted(muns.items())]
     tot = {}
     for l in lista:
         for n, q in l[4].items(): tot[n] = tot.get(n, 0) + q

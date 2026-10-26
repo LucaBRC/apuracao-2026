@@ -126,6 +126,22 @@
       <div id="turnos"></div>
     </div>
     <div class="card">
+      <div class="mut">Imutabilidade: municípios fechados não podem mudar depois</div>
+      <div id="imut"></div>
+    </div>
+    <div class="card">
+      <div class="mut">Bateria extra de testes de fraude (referência: 2022)</div>
+      <div id="bateria"></div>
+      <details style="font-size:12px;color:var(--mut);margin-top:8px"><summary>O que cada teste procura</summary>
+        <ul>
+          <li><b>Comparecimento × voto</b> (Myagkov, Ordeshook &amp; Shakin, 2009): em enchimento de urna, onde o comparecimento sobe, os votos de um candidato sobem mais que os eleitores a mais. Mede a inclinação de votos/eleitorado contra comparecimento, comparando municípios do mesmo estado. Teoricamente fica entre 0 e 1. No Brasil real ela já sai um pouco dessa faixa (em 2022: PT −0,15 e Bolsonaro 1,08, porque comparecimento e perfil do eleitor andam juntos), então a régua é a diferença em relação a 2022.</li>
+          <li><b>Brancos+nulos</b>: votos brancos e nulos convertidos para um lado aparecem como municípios com taxa muito abaixo (ou acima) da dos vizinhos do mesmo estado.</li>
+          <li><b>1º → 2º turno</b>: o 2º turno de cada município é bem previsto pelo 1º. Manipulação local aparece como município fora dessa previsão. A régua é a mesma relação 1º→2º de 2022.</li>
+          <li>Não usados: a 1ª lei de Benford (não vale para contagens de votos, segundo Mebane e Deckert et al.) e testes por seção ou boletim de urna (exigem baixar cerca de 500 mil arquivos).</li>
+        </ul>
+      </details>
+    </div>
+    <div class="card">
       <div class="mut">Comparação com 2022 e 2018 (mesmos métodos)</div>
       <div id="comp"></div>
       <div class="mut" style="margin-top:8px;font-size:12px">Dados de 2022 e 2018: Dados Abertos do TSE (votação por partido e detalhe por município/zona, 2º turno, sem exterior). A curva de apuração dos anos anteriores não dá para comparar, porque o TSE não guarda os horários da totalização daquelas eleições.</div>
@@ -563,6 +579,8 @@ function desenharAnomalias() {
   el.innerHTML = h;
   desenharKlimek(cands);
   desenharComparacao();
+  desenharBateria();
+  desenharImut();
 }
 
 // claude---(comparacao): mesmos testes em 2022 e 2018 (Dados Abertos do TSE) + consistência município a município
@@ -684,11 +702,119 @@ function desenharTurnos() {
     `<div class="mut" style="margin-top:6px;font-size:12px">1º turno: resultado final do TSE (${turno1.BR.hora}). 2º turno: parcial atual de cada estado, que muda até 100% apurado. Número cinza = variação em pontos. Faixa à esquerda = quem lidera o 2º turno no estado. BR inclui exterior.</div>`;
 }
 
+// claude---(bateria): testes adicionais de perícia eleitoral, 2026 × 2022 como referência, simétricos (PT e adversário)
+let t1mun = null;
+async function carregarT1Mun() {
+  try { const r = await fetch('primeiro_turno_mun.json'); if (r.ok) { const j = await r.json(); t1mun = {}; j.forEach(m => t1mun[m[0] + m[1]] = m[2]); } } catch (e) {}
+}
+function resolver3(A, b) { // eliminação de Gauss 3x3
+  const M = A.map((l, i) => [...l, b[i]]);
+  for (let i = 0; i < 3; i++) {
+    let p = i; for (let k = i + 1; k < 3; k++) if (Math.abs(M[k][i]) > Math.abs(M[p][i])) p = k;
+    [M[i], M[p]] = [M[p], M[i]];
+    for (let k = 0; k < 3; k++) if (k !== i) { const f = M[k][i] / M[i][i]; for (let j = i; j < 4; j++) M[k][j] -= f * M[i][j]; }
+  }
+  return M.map((l, i) => l[3] / l[i]);
+}
+const somaObj = o => Object.values(o || {}).reduce((a, b) => a + b, 0);
+// A. Comparecimento × voto (Myagkov, Ordeshook & Shakin 2009), com efeito fixo de UF, ponderado pelo eleitorado:
+// inclinação de (votos do candidato / eleitorado) contra comparecimento. Fora de [0, 1] = mais de 100% dos
+// eleitores "a mais" indo para um lado só, ou retirada de votos: assinatura clássica de enchimento.
+function myagkov(lista, n) {
+  const porUf = {};
+  lista.forEach(m => { if (m.te > 0) (porUf[m.uf] = porUf[m.uf] || []).push(m); });
+  let sxy = 0, sxx = 0, syy = 0;
+  for (const uf in porUf) {
+    const g = porUf[uf], W = g.reduce((s, m) => s + m.te, 0);
+    const mx = g.reduce((s, m) => s + m.te * (m.c / m.te), 0) / W, my = g.reduce((s, m) => s + m.te * ((m.v[n] || 0) / m.te), 0) / W;
+    g.forEach(m => { const dx = m.c / m.te - mx, dy = (m.v[n] || 0) / m.te - my; sxy += m.te * dx * dy; sxx += m.te * dx * dx; syy += m.te * dy * dy; });
+  }
+  return {b: sxy / sxx, r: sxy / Math.sqrt(sxx * syy)};
+}
+// B. Brancos+nulos fora do padrão: taxa por município, z robusto dentro da própria UF, |z| > 5
+function brancosNulos(lista) {
+  const porUf = {}, out = [];
+  lista.forEach(m => { if (m.c >= 500 && m.bn != null) (porUf[m.uf] = porUf[m.uf] || []).push(m); });
+  let n = 0;
+  for (const uf in porUf) { const g = porUf[uf]; if (g.length < 8) continue; n += g.length;
+    const z = zRobusto(g.map(m => m.bn / m.c)); g.forEach((m, i) => { if (Math.abs(z[i]) > 5) out.push({m, z: z[i], taxa: m.bn / m.c}); }); }
+  return {n, out: out.sort((a, b) => Math.abs(b.z) - Math.abs(a.z))};
+}
+// C. 1º → 2º turno por município: % PT no 2º ~ % PT no 1º + % adversário no 1º; resíduos com z robusto > 5
+function turno1a2(lista, pt, adv) {
+  const pts = lista.filter(m => m.t1 && m.c >= 500 && somaVotos([0,0,0,0,m.v]) > 0 && somaObj(m.t1) > 0).map(m => {
+    const s1 = somaObj(m.t1), s2 = somaObj(m.v);
+    return {m, x1: (m.t1[pt] || 0) / s1, x2: (m.t1[adv] || 0) / s1, y: (m.v[pt] || 0) / s2};
+  });
+  if (pts.length < 100) return null;
+  const A = [[0,0,0],[0,0,0],[0,0,0]], b = [0,0,0];
+  pts.forEach(p => { const x = [1, p.x1, p.x2]; for (let i = 0; i < 3; i++) { b[i] += x[i] * p.y; for (let j = 0; j < 3; j++) A[i][j] += x[i] * x[j]; } });
+  const c = resolver3(A, b), my = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+  let sr = 0, st = 0; const res = pts.map(p => { const e = p.y - (c[0] + c[1] * p.x1 + c[2] * p.x2); sr += e * e; st += (p.y - my) ** 2; return e; });
+  const z = zRobusto(res);
+  return {n: pts.length, r2: 1 - sr / st, out: pts.map((p, i) => Object.assign({z: z[i], esp: p.y - res[i]}, p)).filter(p => Math.abs(p.z) > 5).sort((a, b) => Math.abs(b.z) - Math.abs(a.z))};
+}
+
+function desenharBateria() {
+  const el = document.getElementById('bateria');
+  const cands = (dados.BR && dados.BR.cands) || [];
+  if (!anos || !t1mun || muns.length < 200 || !cands.length) { el.innerHTML = '<div class="mut">carregando…</div>'; return; }
+  if (!Object.keys(nomesMun).length) anos['2022'].municipios.forEach(x => nomesMun[x[0] + x[1]] = x[5]);
+  const adv26 = (cands.find(c => c.n !== '13') || {}).n || '22';
+  const d26 = muns.map(m => ({uf: m[0], k: m[0] + m[1], te: m[2], c: m[3], v: m[4], bn: m[7], t1: t1mun[m[0] + m[1]]}));
+  const fech = {}; d26.forEach(m => fech[m.k] = 1);
+  const d22 = anos['2022'].municipios.map(m => ({uf: m[0], k: m[0] + m[1], te: m[2], c: m[3], v: m[4], bn: m[6], t1: m[7]}));
+  const d22m = d22.filter(m => fech[m.k]);
+  const sets = [['2026 (parcial)', d26, adv26], ['2022 mesmos mun.', d22m, '22'], ['2022', d22, '22']];
+  const pct = x => (x * 100).toFixed(2).replace('.', ',') + '%';
+  const f3 = x => x.toFixed(3).replace('.', ',');
+  const R = sets.map(([nome, l, adv]) => ({nome, myPT: myagkov(l, '13'), myAdv: myagkov(l, adv), bn: brancosNulos(l), t: turno1a2(l, '13', adv)}));
+  const fora = (v, ok) => `<td style="color:${ok ? '#22c55e' : '#facc15'}">${v}${ok ? '' : ' ⚠'}</td>`;
+  const ref = R[1];
+  let h = '<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th>Teste</th>' + R.map(r => `<th>${r.nome}</th>`).join('') + '</tr></thead><tbody>';
+  // dado real brasileiro já sai um pouco de [0; 1] (2022 inclusive): a régua é a diferença para 2022 nos mesmos municípios
+  h += '<tr><td>Comparecimento×voto · inclinação PT</td>' + R.map(r => fora(f3(r.myPT.b), Math.abs(r.myPT.b - ref.myPT.b) <= 0.3)).join('') + '</tr>';
+  h += '<tr><td>Comparecimento×voto · inclinação adversário</td>' + R.map(r => fora(f3(r.myAdv.b), Math.abs(r.myAdv.b - ref.myAdv.b) <= 0.3)).join('') + '</tr>';
+  h += '<tr><td>Brancos+nulos fora do padrão na UF</td>' + R.map(r => { const t = r.bn.out.length / Math.max(1, r.bn.n), tr = ref.bn.out.length / Math.max(1, ref.bn.n);
+    return fora(`${r.bn.out.length} (${pct(t)})`, t <= Math.max(0.01, 3 * tr)); }).join('') + '</tr>';
+  h += '<tr><td>1º→2º turno · R² do modelo</td>' + R.map(r => r.t ? fora(f3(r.t.r2), r.t.r2 >= ref.t.r2 - 0.1) : '<td>–</td>').join('') + '</tr>';
+  h += '<tr><td>1º→2º turno · municípios fora da reta</td>' + R.map(r => { if (!r.t) return '<td>–</td>'; const t = r.t.out.length / r.t.n, tr = ref.t.out.length / ref.t.n;
+    return fora(`${r.t.out.length} (${pct(t)})`, t <= Math.max(0.01, 3 * tr)); }).join('') + '</tr>';
+  h += '</tbody></table></div>';
+  h += `<div class="mut" style="margin-top:4px;font-size:12px">⚠ = fora da faixa: inclinação mais de 0,3 diferente da de 2022 nos mesmos municípios; taxa de municípios fora do padrão acima de 3× a de 2022 nos mesmos municípios (e acima de 1%); R² mais de 0,1 abaixo do de 2022.</div>`;
+  const nm = m => `${nomesMun[m.k] || m.k}/${m.uf.toUpperCase()}`;
+  const r26 = R[0];
+  if (r26.bn.out.length) h += '<div class="mut" style="margin-top:8px">Brancos+nulos mais fora do padrão (2026):</div>' +
+    r26.bn.out.slice(0, 6).map(o => `<div class="alerta info">${nm(o.m)} · ${pct(o.taxa)} brancos+nulos (z=${o.z.toFixed(1)} na UF)</div>`).join('');
+  if (r26.t && r26.t.out.length) h += '<div class="mut" style="margin-top:8px">Maiores desvios 1º→2º turno (2026, os dois sentidos):</div>' +
+    r26.t.out.slice(0, 6).map(o => `<div class="alerta info">${nm(o.m)} · PT 1º ${pct(o.x1)} / adv. 1º ${pct(o.x2)} → PT 2º ${pct(o.y)} (esperado ${pct(o.esp)}, z=${o.z.toFixed(1)})</div>`).join('');
+  el.innerHTML = h;
+}
+
+
+// claude---(selos): alterações em municípios já fechados, detectadas pelo coletor a cada rodada
+let alts = null;
+async function carregarAlts() {
+  try { const r = await fetch('alteracoes.json?nocache=' + Date.now(), {cache:'no-store'}); if (r.ok) alts = await r.json(); } catch (e) {}
+}
+function desenharImut() {
+  const el = document.getElementById('imut');
+  if (!alts || !munsMeta) { el.innerHTML = '<div class="mut">carregando…</div>'; return; }
+  const sel = munsMeta.selados != null ? munsMeta.selados.toLocaleString('pt-BR') : '?';
+  let h = `<div class="mut" style="margin:4px 0">${sel} municípios selados (números gravados quando fecharam) · conferidos a cada ~6 min · última conferência ${munsMeta.gerado.split(' ')[1]} · arquivos assinados do TSE guardados em <a href="https://github.com/LucaBRC/apuracao-2026/tree/main/snapshots" style="color:#60a5fa">snapshots/</a></div>`;
+  if (!alts.length) h += '<div class="alerta" style="border-color:#22c55e">Nenhuma alteração: todo município fechado continua com os mesmos números.</div>';
+  else h += alts.slice(-20).reverse().map(a => {
+    const dv = Object.keys(a.depois.v).map(n => `${n}: ${(a.antes.v[n] || 0).toLocaleString('pt-BR')} → ${(a.depois.v[n] || 0).toLocaleString('pt-BR')}`).join(' · ');
+    return `<div class="alerta forte">${a.quando.split(' ')[1]} · ${nomesMun[a.k] || a.k}/${a.k.slice(0, 2).toUpperCase()} mudou depois de fechado · ${dv} · comparecimento ${a.antes.c} → ${a.depois.c}</div>`;
+  }).join('');
+  el.innerHTML = h;
+}
+
 montarMapa();
 const redesenharHist = () => { desenharGrafico(); desenharAnomalias(); desenharMun(); };
 window.addEventListener('resize', () => desenharGrafico());
-Promise.all([carregarHistorico(), carregarMunicipios(), carregarAnos(), carregarTurno1()]).then(() => { redesenharHist(); desenharTurnos(); });
-setInterval(() => Promise.all([carregarHistorico(), carregarMunicipios()]).then(redesenharHist), 120000);
+Promise.all([carregarHistorico(), carregarMunicipios(), carregarAnos(), carregarTurno1(), carregarT1Mun(), carregarAlts()]).then(() => { redesenharHist(); desenharTurnos(); });
+setInterval(() => Promise.all([carregarHistorico(), carregarMunicipios(), carregarAlts()]).then(redesenharHist), 120000);
 let falta = 0;
 setInterval(() => {
   if (--falta <= 0) { falta = INTERVALO; atualizar(); }

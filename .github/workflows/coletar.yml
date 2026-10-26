@@ -23,10 +23,13 @@ jobs:
           git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
           # o agendamento do GitHub atrasa ou nem dispara; uma rodada longa coleta em laço
           fim=$(( $(date +%s) + ${{ github.event.inputs.minutos || 4 }} * 60 ))
+          i=0
           while [ $(date +%s) -lt $fim ]; do
             python coletar.py 5 || true
-            python reconstruir.py || true
-            git add historico.json historico_reconstruido.json municipios.json
+            # a cada ~30 min, guarda também os arquivos assinados do TSE (snapshots/)
+            if [ $((i % 5)) -eq 0 ]; then python reconstruir.py --snapshot || true; else python reconstruir.py || true; fi
+            i=$((i + 1))
+            git add historico.json historico_reconstruido.json municipios.json selados.json alteracoes.json snapshots
             if ! git diff --cached --quiet; then
               git commit -q -m "historico: novo ponto"
               git pull -q --rebase -X theirs || git rebase --abort
