@@ -8,7 +8,7 @@ def ler_tse():
     req = urllib.request.Request(URL.format(int(time.time() * 1000)), headers={'User-Agent': 'apuracao-2026'})
     txt = urllib.request.urlopen(req, timeout=20).read().decode().strip()
     p = txt.split('.')[1]
-    d = json.loads(base64.urlsafe_b64decode(p + '=' * (-len(p) % 4)).decode('latin1'))
+    d = json.loads(base64.urlsafe_b64decode(p + '=' * (-len(p) % 4)).decode('utf-8'))
     votos = {c['n']: int(c['vap'])
              for a in d['carg'][0]['agr'] for par in a['par'] for c in par['cand']}
     return {'t': f"{d['dg']} {d['hg']}", 'pst': float(d['s']['pst'].replace(',', '.')), 'st': int(d['s']['st']), 'v': votos}

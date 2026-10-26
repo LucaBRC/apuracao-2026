@@ -22,7 +22,7 @@ def baixar(caminho):
                                          headers={'User-Agent': 'apuracao-2026'})
             txt = urllib.request.urlopen(req, timeout=30).read().decode().strip()
             p = txt.split('.')[1]
-            return json.loads(base64.urlsafe_b64decode(p + '=' * (-len(p) % 4)).decode('latin1'))
+            return json.loads(base64.urlsafe_b64decode(p + '=' * (-len(p) % 4)).decode('utf-8'))
         except Exception as e:
             erro = e
             time.sleep(1 + tentativa)

@@ -122,6 +122,10 @@
       </details>
     </div>
     <div class="card">
+      <div class="mut">1º turno (final) × 2º turno (agora), por estado · % dos votos válidos</div>
+      <div id="turnos"></div>
+    </div>
+    <div class="card">
       <div class="mut">Comparação com 2022 e 2018 (mesmos métodos)</div>
       <div id="comp"></div>
       <div class="mut" style="margin-top:8px;font-size:12px">Dados de 2022 e 2018: Dados Abertos do TSE (votação por partido e detalhe por município/zona, 2º turno, sem exterior). A curva de apuração dos anos anteriores não dá para comparar, porque o TSE não guarda os horários da totalização daquelas eleições.</div>
@@ -166,7 +170,7 @@ function decodeJws(txt) {
   p += '='.repeat((4 - p.length % 4) % 4);
   const bin = atob(p), bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return JSON.parse(new TextDecoder('iso-8859-1').decode(bytes));
+  return JSON.parse(new TextDecoder('utf-8').decode(bytes));
 }
 
 function resumir(d) {
@@ -198,6 +202,7 @@ async function atualizar() {
   desenhar();
   desenharGrafico();
   desenharAnomalias();
+  desenharTurnos();
 }
 
 function corApu(p) {
@@ -653,10 +658,36 @@ function desenharComparacao() {
   el.innerHTML = h;
 }
 
+
+// claude---(turnos): 1º turno final (eleição 6257) × 2º turno ao vivo, por UF
+let turno1 = null;
+async function carregarTurno1() {
+  try { const r = await fetch('primeiro_turno.json'); if (r.ok) turno1 = await r.json(); } catch (e) {}
+}
+function desenharTurnos() {
+  const el = document.getElementById('turnos');
+  if (!turno1 || !dados.BR) { el.innerHTML = '<div class="mut">carregando…</div>'; return; }
+  const pct1 = (uf, n) => { const t = turno1[uf]; return t && t.cands[n] ? t.cands[n].votos / t.validos * 100 : null; };
+  const pct2 = (uf, n) => { const d = dados[uf]; const c = d && d.cands.find(x => x.n === n); return c ? c.pct : null; };
+  const f1 = v => v == null ? '–' : v.toFixed(1).replace('.', ',');
+  const dl = (a, b) => a == null || b == null ? '' : `<span style="color:#8b93a5;font-size:11px"> ${b - a >= 0 ? '+' : ''}${(b - a).toFixed(1).replace('.', ',')}</span>`;
+  const linha = uf => {
+    const l1 = pct1(uf, '13'), l2 = pct2(uf, '13'), b1 = pct1(uf, '22'), b2 = pct2(uf, '22'), d = dados[uf];
+    const v2 = l2 != null && b2 != null ? (l2 > b2 ? '#ef4444' : '#3b82f6') : '#888';
+    return `<tr${uf === 'BR' ? ' style="font-weight:700"' : ''}><td style="border-left:3px solid ${v2}">${uf}</td>` +
+      `<td style="color:#ef4444">${f1(l1)}</td><td style="color:#ef4444">${f1(l2)}${dl(l1, l2)}</td>` +
+      `<td style="color:#3b82f6">${f1(b1)}</td><td style="color:#3b82f6">${f1(b2)}${dl(b1, b2)}</td>` +
+      `<td class="mut">${d ? Math.floor(d.pst) + '%' : '–'}</td></tr>`;
+  };
+  el.innerHTML = '<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th>UF</th><th>Lula 1º</th><th>Lula 2º</th><th>Flávio 1º</th><th>Flávio 2º</th><th>2º apurado</th></tr></thead><tbody>' +
+    ['BR', ...UFS].map(linha).join('') + '</tbody></table></div>' +
+    `<div class="mut" style="margin-top:6px;font-size:12px">1º turno: resultado final do TSE (${turno1.BR.hora}). 2º turno: parcial atual de cada estado, que muda até 100% apurado. Número cinza = variação em pontos. Faixa à esquerda = quem lidera o 2º turno no estado. BR inclui exterior.</div>`;
+}
+
 montarMapa();
 const redesenharHist = () => { desenharGrafico(); desenharAnomalias(); desenharMun(); };
 window.addEventListener('resize', () => desenharGrafico());
-Promise.all([carregarHistorico(), carregarMunicipios(), carregarAnos()]).then(redesenharHist);
+Promise.all([carregarHistorico(), carregarMunicipios(), carregarAnos(), carregarTurno1()]).then(() => { redesenharHist(); desenharTurnos(); });
 setInterval(() => Promise.all([carregarHistorico(), carregarMunicipios()]).then(redesenharHist), 120000);
 let falta = 0;
 setInterval(() => {
