@@ -3,6 +3,10 @@ on:
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
+    inputs:
+      minutos:
+        description: 'Quanto tempo coletar sem parar'
+        default: '180'
 concurrency:
   group: coletar
   cancel-in-progress: false
@@ -11,16 +15,21 @@ permissions:
 jobs:
   coletar:
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
-      - run: python coletar.py 5
-      - run: python reconstruir.py
-        continue-on-error: true
       - run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
-          git add historico.json historico_reconstruido.json municipios.json
-          git diff --cached --quiet && exit 0
-          git commit -m "historico: novo ponto"
-          git pull --rebase -q && git push
+          # o agendamento do GitHub atrasa ou nem dispara; uma rodada longa coleta em laço
+          fim=$(( $(date +%s) + ${{ github.event.inputs.minutos || 4 }} * 60 ))
+          while [ $(date +%s) -lt $fim ]; do
+            python coletar.py 5 || true
+            python reconstruir.py || true
+            git add historico.json historico_reconstruido.json municipios.json
+            if ! git diff --cached --quiet; then
+              git commit -q -m "historico: novo ponto"
+              git pull -q --rebase -X theirs || git rebase --abort
+              git push -q || true
+            fi
+          done

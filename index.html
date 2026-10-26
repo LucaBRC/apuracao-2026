@@ -275,7 +275,7 @@ function desenhar() {
   const c0 = cands[0] || {}, c1 = cands[1] || {};
   ordemCand = cands;
   document.getElementById('leg').innerHTML = modo === 'mun'
-    ? `<span style="color:#ef4444">■</span> PT na frente &nbsp; <span style="color:#3b82f6">■</span> PL na frente · cor forte = vantagem maior · desbotado = município ainda apurando · toque num município`
+    ? `<span><span style="color:#ef4444">■</span> PT na frente &nbsp; <span style="color:#3b82f6">■</span> PL na frente · cor forte = vantagem maior · desbotado = município ainda apurando · toque num município</span>`
     : modo === 'apu'
     ? `0% <i style="background:linear-gradient(90deg,${corApu(0.01)},${corApu(100)})"></i> 100% · <span style="color:#9aa">cinza = nada apurado</span>`
     : cands.map(c => `<span style="color:${COR_CAND[c.n]}">●</span> ${c.nome}`).join(' &nbsp; ') + ' · cor mais forte = vantagem maior';
