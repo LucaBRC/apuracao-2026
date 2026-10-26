@@ -33,7 +33,7 @@
   .tabs button { background:#11141a; color:var(--txt); border:1px solid var(--line); padding:6px 10px; border-radius:6px; cursor:pointer; }
   .tabs button.on { background:#2a2f3a; border-color:#555; }
   #tip { position:fixed; pointer-events:none; background:#000d; border:1px solid #444; border-radius:8px; padding:8px 10px; font-size:13px; display:none; z-index:9; }
-  .leg { display:flex; align-items:center; gap:6px; margin-top:8px; }
+  .leg { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:8px; }
   .leg i { display:inline-block; width:120px; height:10px; border-radius:5px; }
   .err { color:#f87171; }
   /* claude---(grafico) */
@@ -78,6 +78,7 @@
   <div class="tabs">
     <button id="mApu" class="on">Cor: % apurado</button>
     <button id="mLid">Cor: quem lidera</button>
+    <button id="mMun">Cor: municípios</button>
     <span class="mut" id="cont"></span>
   </div>
 </header>
@@ -216,7 +217,7 @@ function corLid(d) {
 function montarMapa() {
   const svg = document.getElementById('mapa');
   svg.setAttribute('viewBox', `0 0 ${MAPA_W} ${MAPA_H}`);
-  let h = '';
+  let h = '<g id="gMun"></g>';
   for (const uf of UFS) h += `<path class="uf" id="p_${uf}" data-uf="${uf}" d="${MAPA[uf]}"/>`;
   svg.innerHTML = h;
   for (const uf of UFS) {
@@ -237,6 +238,8 @@ function montarMapa() {
   svg.addEventListener('mouseleave', () => tip.style.display = 'none');
   // claude---(mobile): toque num estado mostra o detalhe abaixo do mapa
   svg.addEventListener('click', e => {
+    const mun = e.target.dataset && e.target.dataset.mun;
+    if (mun) { munSel = mun; document.getElementById('sel').innerHTML = infoMun(mun); return; }
     selecionado = (e.target.dataset && e.target.dataset.uf) || null;
     document.querySelectorAll('path.uf').forEach(p => p.style.stroke = p.dataset.uf === selecionado ? '#fff' : '');
     mostrarSel();
@@ -259,14 +262,21 @@ function desenhar() {
   for (const uf of UFS) {
     const d = dados[uf];
     const el = document.getElementById('p_' + uf);
-    el.style.fill = modo === 'apu' ? corApu(d ? d.pst : 0) : corLid(d);
-    document.getElementById('t_' + uf).textContent = d ? `${uf} ${Math.floor(d.pst)}%` : uf;
+    el.style.fill = modo === 'mun' ? 'transparent' : modo === 'apu' ? corApu(d ? d.pst : 0) : corLid(d);
+    el.style.pointerEvents = modo === 'mun' ? 'none' : '';
+    el.style.strokeWidth = modo === 'mun' ? '1.4' : '';
+    const t = document.getElementById('t_' + uf);
+    t.textContent = d ? `${uf} ${Math.floor(d.pst)}%` : uf;
+    t.style.display = modo === 'mun' ? 'none' : '';
   }
-  mostrarSel();
+  desenharMun();
+  if (modo === 'mun') { if (munSel) document.getElementById('sel').innerHTML = infoMun(munSel); } else mostrarSel();
   const cands = (dados.BR && dados.BR.cands) || [];
   const c0 = cands[0] || {}, c1 = cands[1] || {};
   ordemCand = cands;
-  document.getElementById('leg').innerHTML = modo === 'apu'
+  document.getElementById('leg').innerHTML = modo === 'mun'
+    ? `<span style="color:#ef4444">■</span> PT na frente &nbsp; <span style="color:#3b82f6">■</span> PL na frente · cor forte = vantagem maior · desbotado = município ainda apurando · toque num município`
+    : modo === 'apu'
     ? `0% <i style="background:linear-gradient(90deg,${corApu(0.01)},${corApu(100)})"></i> 100% · <span style="color:#9aa">cinza = nada apurado</span>`
     : cands.map(c => `<span style="color:${COR_CAND[c.n]}">●</span> ${c.nome}`).join(' &nbsp; ') + ' · cor mais forte = vantagem maior';
 
@@ -306,8 +316,49 @@ document.querySelectorAll('th').forEach(th => th.onclick = () => {
   ordem = {k, d: ordem.k === k ? -ordem.d : (k === 'uf' ? 1 : -1)};
   desenhar();
 });
-document.getElementById('mApu').onclick = () => { modo='apu'; mApu.classList.add('on'); mLid.classList.remove('on'); desenhar(); };
-document.getElementById('mLid').onclick = () => { modo='lid'; mLid.classList.add('on'); mApu.classList.remove('on'); desenhar(); };
+// claude---(municipios): troca de modo do mapa; a malha de municípios só carrega quando pedida
+function trocarModo(m) {
+  modo = m;
+  ['mApu','mLid','mMun'].forEach(id => document.getElementById(id).classList.toggle('on', id === {apu:'mApu', lid:'mLid', mun:'mMun'}[m]));
+  if (m === 'mun' && typeof MAPA_MUN === 'undefined') {
+    document.getElementById('leg').textContent = 'carregando mapa dos municípios…';
+    const sc = document.createElement('script'); sc.src = 'mapa_mun.js'; sc.onload = desenhar; document.body.appendChild(sc);
+    return;
+  }
+  desenhar();
+}
+document.getElementById('mApu').onclick = () => trocarModo('apu');
+document.getElementById('mLid').onclick = () => trocarModo('lid');
+document.getElementById('mMun').onclick = () => trocarModo('mun');
+
+let munSel = null, munPorIbge = {}, nomesMun = {};
+function desenharMun() {
+  const g = document.getElementById('gMun');
+  if (modo !== 'mun' || typeof MAPA_MUN === 'undefined') { g.style.display = 'none'; return; }
+  g.style.display = '';
+  if (!g.childElementCount) {
+    let h = ''; for (const cdi in MAPA_MUN) h += `<path data-mun="${cdi}" d="${MAPA_MUN[cdi]}" stroke="#0f1115" stroke-width=".25"/>`;
+    g.innerHTML = h;
+  }
+  munPorIbge = {}; munsTodos.forEach(m => { if (m[6]) munPorIbge[m[6]] = m; });
+  for (const p of g.children) {
+    const m = munPorIbge[p.dataset.mun], v = m ? m[4] : null;
+    const a = v ? (v['13'] || 0) : 0, b = v ? (v['22'] || 0) : 0;
+    if (!a && !b) { p.setAttribute('fill', '#3a3f4b'); p.removeAttribute('fill-opacity'); continue; }
+    const lider = a >= b ? '#ef4444' : '#3b82f6', marg = Math.abs(a - b) / (a + b);
+    let op = Math.min(1, 0.35 + marg * 1.6);
+    if (m[5] === 0) op *= 0.45;
+    p.setAttribute('fill', lider); p.setAttribute('fill-opacity', op.toFixed(2));
+  }
+}
+function infoMun(cdi) {
+  const m = munPorIbge[cdi];
+  if (!m) return 'Município sem dados ainda';
+  if (anos && !Object.keys(nomesMun).length) anos['2022'].municipios.forEach(x => nomesMun[x[0] + x[1]] = x[5]);
+  const tot = somaVotos(m) || 1, nome = nomesMun[m[0] + m[1]] || m[1];
+  return `<b>${nome}/${m[0].toUpperCase()}</b> ${m[5] === 0 ? '<span class="mut">(ainda apurando)</span>' : '<span class="mut">(100% apurado)</span>'}` +
+    ((dados.BR && dados.BR.cands) || []).map(c => `<br><span style="color:${COR_CAND[c.n]}">●</span> ${c.nome}: ${((m[4][c.n] || 0) / tot * 100).toFixed(2).replace('.', ',')}% (${(m[4][c.n] || 0).toLocaleString('pt-BR')})`).join('');
+}
 
 
 // claude---(grafico): histórico = historico.json (GitHub Actions, a cada ~1 min) + pontos vistos neste aparelho
@@ -394,11 +445,12 @@ function desenharGrafico() {
 
 // claude---(anomalias): testes estatísticos gerais (literatura de perícia eleitoral), simétricos por candidato
 const Z_LIM = 4, MIN_INT = 8, ALFA = 0.01 / 7;
-let muns = [], munsMeta = null;
+let muns = [], munsTodos = [], munsMeta = null;
 async function carregarMunicipios() {
   try {
     const r = await fetch('municipios.json?nocache=' + Date.now(), {cache:'no-store'});
-    if (r.ok) { const j = await r.json(); muns = j.municipios || []; munsMeta = j.meta; }
+    // claude---(municipios): testes usam só os fechados; o mapa por município usa todos
+    if (r.ok) { const j = await r.json(); munsTodos = j.municipios || []; muns = munsTodos.filter(m => m[5] !== 0); munsMeta = j.meta; }
   } catch (e) {}
 }
 function mediana(a) { const b = [...a].sort((x, y) => x - y), m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; }
@@ -602,7 +654,7 @@ function desenharComparacao() {
 }
 
 montarMapa();
-const redesenharHist = () => { desenharGrafico(); desenharAnomalias(); };
+const redesenharHist = () => { desenharGrafico(); desenharAnomalias(); desenharMun(); };
 window.addEventListener('resize', () => desenharGrafico());
 Promise.all([carregarHistorico(), carregarMunicipios(), carregarAnos()]).then(redesenharHist);
 setInterval(() => Promise.all([carregarHistorico(), carregarMunicipios()]).then(redesenharHist), 120000);

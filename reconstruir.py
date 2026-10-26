@@ -41,23 +41,28 @@ def main():
     cm = json.load(urllib.request.urlopen(urllib.request.Request(
         'https://resultados.tse.jus.br/oficial/ele2026/6258/config/mun-e006258-cm.json', headers={'User-Agent': 'apuracao-2026'})))
     nomes = {(a['cd'], m['cd']): m['nm'] for a in cm['abr'] for m in a['mu']}
-    fechados = [(uf, m['cdabr'], f"{m['dt']} {m['ht']}") for uf in UFS for m in abr[uf]
-                if m.get('tpabr') == 'mun' and m.get('and') == 'f']
+    ibge = {(a['cd'], m['cd']): m['cdi'] for a in cm['abr'] for m in a['mu']}
+    # todos os municípios: os fechados alimentam a curva e os testes; os em andamento, só o mapa por município
+    todos = [(uf, m['cdabr'], f"{m['dt']} {m['ht']}", m.get('and') == 'f') for uf in UFS for m in abr[uf]
+             if m.get('tpabr') == 'mun']
+    fechados = [t for t in todos if t[3]]
     total = sum(1 for uf in UFS for m in abr[uf] if m.get('tpabr') == 'mun')
     print(f'{len(fechados)} de {total} municípios finalizados')
 
     eventos, falhas, muns = [], 0, []
     def um(item):
-        uf, cd, t = item
+        uf, cd, t, fin = item
         try:
             v, st, te, c = municipio(uf, cd)
-            muns.append([uf, cd, te, c, v])
+            muns.append([uf, cd, te, c, v, 1 if fin else 0, ibge.get((uf, cd), '')])
+            if not fin: return 'aberto'
             h = FUSO.get(uf, 0) - (1 if nomes.get((uf, cd)) == NORONHA else 0)
             return (datetime.strptime(t, '%d/%m/%Y %H:%M:%S') + timedelta(hours=h), v, st)
         except Exception:
             return None
     with ThreadPoolExecutor(16) as ex:
-        for i, r in enumerate(ex.map(um, fechados)):
+        for i, r in enumerate(ex.map(um, todos)):
+            if r == 'aberto': continue
             if r: eventos.append(r)
             else: falhas += 1
             if i % 500 == 0: print(i, 'municípios lidos')
@@ -77,7 +82,7 @@ def main():
             'municipios_total': total, 'falhas': falhas}
     json.dump({'meta': meta, 'serie': serie}, open('historico_reconstruido.json', 'w', encoding='utf8'),
               separators=(',', ':'))
-    # por município, para os testes estatísticos da página: [uf, cod, eleitorado, comparecimento, {cand: votos}]
+    # por município: [uf, cod TSE, eleitorado, comparecimento, {cand: votos}, finalizado 1/0, cod IBGE]
     json.dump({'meta': meta, 'municipios': muns}, open('municipios.json', 'w', encoding='utf8'), separators=(',', ':'))
     print(meta, len(serie), 'pontos', serie[0]['t'], '->', serie[-1]['t'])
 
